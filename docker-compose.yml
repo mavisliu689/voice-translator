@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  voice-translator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: voice-translator:latest
+    container_name: voice-translator-app
+    ports:
+      - "8080:80"  # 對外端口:容器內部端口
+    environment:
+      # 注意：這些環境變數是在建構時使用的，不是運行時
+      # 如果需要在運行時設定 API Key，需要修改應用程式架構
+      - NODE_ENV=production
+    restart: unless-stopped
+    networks:
+      - translator-network
+    volumes:
+      # 如果需要持久化日誌或其他數據
+      - ./logs:/var/log/nginx
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # 如果未來需要後端服務，可以在這裡添加
+  # backend:
+  #   image: your-backend-image
+  #   container_name: translator-backend
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     - GOOGLE_TRANSLATE_API_KEY=${GOOGLE_TRANSLATE_API_KEY}
+  #   networks:
+  #     - translator-network
+
+networks:
+  translator-network:
+    driver: bridge
+
+# 如果需要持久化數據
+# volumes:
+#   translator-data:
