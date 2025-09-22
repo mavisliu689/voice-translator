@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Mic, MicOff, Volume2, ArrowRightLeft, Copy, AlertCircle, Shield } from 'lucide-react';
 
 const VoiceTranslator = () => {
@@ -7,7 +7,7 @@ const VoiceTranslator = () => {
   const [interimText, setInterimText] = useState(''); // 臨時識別的文字
   const [sourceLang, setSourceLang] = useState('zh-TW');
   const [targetLang, setTargetLang] = useState('en');
-  const [isTranslating, setIsTranslating] = useState(false);
+  const [, setIsTranslating] = useState(false);
   const [copiedItem, setCopiedItem] = useState<{ id: number; type: 'source' | 'translation' } | null>(null); // 追蹤哪個項目和類型被複製
   const [error, setError] = useState('');
   const [micPermission, setMicPermission] = useState('prompt'); // 'granted', 'denied', 'prompt'
@@ -43,7 +43,7 @@ const VoiceTranslator = () => {
   const checkMicrophonePermission = async () => {
     try {
       if (navigator.permissions) {
-        const permission = await navigator.permissions.query({ name: 'microphone' });
+        const permission = await navigator.permissions.query({ name: 'microphone' as PermissionName });
         setMicPermission(permission.state);
 
         permission.addEventListener('change', () => {
@@ -67,14 +67,15 @@ const VoiceTranslator = () => {
       console.error('麥克風權限請求失敗:', err);
       setMicPermission('denied');
 
-      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+      const error = err as Error & { name: string };
+      if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
         setError('麥克風權限被拒絕。請在瀏覽器設定中允許使用麥克風。');
-      } else if (err.name === 'NotFoundError') {
+      } else if (error.name === 'NotFoundError') {
         setError('找不到麥克風設備。請確認您的設備已連接麥克風。');
-      } else if (err.name === 'NotReadableError') {
+      } else if (error.name === 'NotReadableError') {
         setError('麥克風正在被其他應用程式使用。');
       } else {
-        setError('無法存取麥克風：' + err.message);
+        setError('無法存取麥克風：' + error.message);
       }
       return false;
     }
@@ -96,7 +97,7 @@ const VoiceTranslator = () => {
       }
 
       // 語言代碼映射（確保與 Google Translate API 相容）
-      const languageMap = {
+      const languageMap: { [key: string]: string } = {
         'zh-TW': 'zh-TW',  // 繁體中文
         'en': 'en',        // 英文
         'ja': 'ja'         // 日文
@@ -136,18 +137,19 @@ const VoiceTranslator = () => {
       }
     } catch (err) {
       console.error('Translation error:', err);
+      const errorMessage = err instanceof Error ? err.message : String(err);
 
       // 根據錯誤類型提供更詳細的錯誤訊息
-      if (err.message.includes('API Key')) {
+      if (errorMessage.includes('API Key')) {
         setError('請設定 Google Translation API Key（詳見下方說明）');
-      } else if (err.message.includes('403')) {
+      } else if (errorMessage.includes('403')) {
         setError('API Key 無效或沒有啟用 Translation API');
-      } else if (err.message.includes('429')) {
+      } else if (errorMessage.includes('429')) {
         setError('API 請求次數超過限制，請稍後再試');
-      } else if (err.message.includes('Network')) {
+      } else if (errorMessage.includes('Network')) {
         setError('網路連線失敗，請檢查網路連線');
       } else {
-        setError(`翻譯失敗: ${err.message}`);
+        setError(`翻譯失敗: ${errorMessage}`);
       }
       return '';
     } finally {
@@ -251,7 +253,7 @@ const VoiceTranslator = () => {
         console.log('語音識別已開始');
       };
 
-      recognition.onresult = (event) => {
+      recognition.onresult = (event: any) => {
         let finalTranscript = '';
         let interimTranscript = '';
 
@@ -316,7 +318,7 @@ const VoiceTranslator = () => {
         }
       };
 
-      recognition.onerror = (event) => {
+      recognition.onerror = (event: any) => {
         console.error('語音識別錯誤:', event.error);
 
         // 詳細的錯誤處理
@@ -417,7 +419,8 @@ const VoiceTranslator = () => {
       recognition.start();
     } catch (err) {
       console.error('啟動語音識別失敗:', err);
-      setError('無法啟動語音識別：' + err.message);
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      setError('無法啟動語音識別：' + errorMessage);
       setIsListening(false);
     }
   };
