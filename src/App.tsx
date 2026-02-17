@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Mic, MicOff, Volume2, Copy, AlertCircle, Shield } from 'lucide-react';
+import { Mic, MicOff, Volume2, ArrowRightLeft, Copy, AlertCircle, Shield } from 'lucide-react';
 
 const languages = [
   { code: 'zh-TW', name: '繁體中文' },
@@ -36,6 +36,7 @@ const VoiceTranslator = () => {
   const [isListening, setIsListening] = useState(false);
   const [sourceText, setSourceText] = useState('');
   const [interimText, setInterimText] = useState('');
+  const [sourceLang, setSourceLang] = useState('auto');
   const [targetLang, setTargetLang] = useState('en');
   const [, setIsTranslating] = useState(false);
   const [copiedItem, setCopiedItem] = useState<{ id: number; type: 'source' | 'translation' } | null>(null);
@@ -59,10 +60,12 @@ const VoiceTranslator = () => {
   const sentenceTimeoutRef = useRef<any>(null);
   const isListeningRef = useRef(false);
   const targetLangRef = useRef(targetLang);
+  const sourceLangRef = useRef(sourceLang);
 
   // Keep refs in sync
   useEffect(() => { isListeningRef.current = isListening; }, [isListening]);
   useEffect(() => { targetLangRef.current = targetLang; }, [targetLang]);
+  useEffect(() => { sourceLangRef.current = sourceLang; }, [sourceLang]);
 
   useEffect(() => {
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
@@ -124,18 +127,20 @@ const VoiceTranslator = () => {
     }
   };
 
-  // Translate using backend API - source is auto-detected (not sent)
-  const translateText = async (text: string, target: string): Promise<{ translation: string; detectedLang: string } | null> => {
+  // Translate using backend API - source is auto-detected when 'auto', otherwise use specified language
+  const translateText = async (text: string, target: string, source?: string): Promise<{ translation: string; detectedLang: string } | null> => {
     if (!text) return null;
     setIsTranslating(true);
     setError('');
 
     try {
       const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001';
+      const body: Record<string, string> = { text, target };
+      if (source && source !== 'auto') body.source = source;
       const response = await fetch(`${BACKEND_URL}/api/translate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, target }) // No source = auto-detect
+        body: JSON.stringify(body)
       });
 
       if (!response.ok) {
@@ -162,8 +167,8 @@ const VoiceTranslator = () => {
     }
   };
 
-  const translateAndAddToHistory = useCallback(async (text: string, target: string) => {
-    const result = await translateText(text, target);
+  const translateAndAddToHistory = useCallback(async (text: string, target: string, source?: string) => {
+    const result = await translateText(text, target, source);
     if (result) {
       setDetectedLang(result.detectedLang);
       const newItem = {
@@ -211,8 +216,8 @@ const VoiceTranslator = () => {
       const recognition = new SpeechRecognition();
       recognition.continuous = true;
       recognition.interimResults = true;
-      // Use a broad language hint but let auto-detect handle it
-      recognition.lang = ''; // Empty = browser default, usually works for multi-language
+      // Use specified language hint or empty for auto-detect
+      recognition.lang = sourceLang !== 'auto' ? (speechLangMap[sourceLang] || sourceLang) : '';
       recognition.maxAlternatives = 1;
       recognitionRef.current = recognition;
 
@@ -246,7 +251,7 @@ const VoiceTranslator = () => {
             if (parts.length > 1) {
               for (let i = 0; i < parts.length - 1; i++) {
                 const sentence = parts[i].trim();
-                if (sentence) translateAndAddToHistory(sentence, currentTarget);
+                if (sentence) translateAndAddToHistory(sentence, currentTarget, sourceLangRef.current);
               }
               return parts[parts.length - 1].trim();
             }
@@ -256,7 +261,7 @@ const VoiceTranslator = () => {
           if (sentenceTimeoutRef.current) clearTimeout(sentenceTimeoutRef.current);
           sentenceTimeoutRef.current = setTimeout(() => {
             setCurrentSentence(prev => {
-              if (prev?.trim()) translateAndAddToHistory(prev.trim(), targetLangRef.current);
+              if (prev?.trim()) translateAndAddToHistory(prev.trim(), targetLangRef.current, sourceLangRef.current);
               return '';
             });
           }, 3000);
@@ -317,7 +322,7 @@ const VoiceTranslator = () => {
     setInterimText('');
 
     setCurrentSentence(prev => {
-      if (prev?.trim()) translateAndAddToHistory(prev.trim(), targetLangRef.current);
+      if (prev?.trim()) translateAndAddToHistory(prev.trim(), targetLangRef.current, sourceLangRef.current);
       return '';
     });
 
@@ -371,15 +376,39 @@ const VoiceTranslator = () => {
             </div>
           )}
 
-          {/* Target language selector + detected language display */}
+          {/* Language selectors */}
           <div className="flex items-center justify-center gap-2 sm:gap-4 mb-4 flex-wrap">
-            {detectedLang && (
-              <div className="flex items-center gap-1 px-3 py-1.5 bg-green-50 border border-green-200 rounded-lg text-sm">
-                <span className="text-green-700">🔍 偵測:</span>
-                <span className="font-medium text-green-800">{langName(detectedLang)}</span>
-              </div>
-            )}
-            <span className="text-gray-500 text-sm">→</span>
+            <div className="flex flex-col items-center gap-1">
+              <select
+                value={sourceLang}
+                onChange={(e) => setSourceLang(e.target.value)}
+                className="px-2 sm:px-4 py-1.5 sm:py-2 text-sm sm:text-base border-2 border-gray-200 rounded-lg focus:outline-none focus:border-blue-500 transition-colors"
+              >
+                <option value="auto">🔍 自動偵測</option>
+                {languages.map(lang => (
+                  <option key={lang.code} value={lang.code}>{lang.name}</option>
+                ))}
+              </select>
+              {sourceLang === 'auto' && detectedLang && (
+                <span className="text-xs text-green-600 font-medium">偵測到: {langName(detectedLang)}</span>
+              )}
+            </div>
+
+            <button
+              onClick={() => {
+                if (sourceLang !== 'auto') {
+                  const tmp = sourceLang;
+                  setSourceLang(targetLang);
+                  setTargetLang(tmp);
+                }
+              }}
+              disabled={sourceLang === 'auto'}
+              className={`p-2 rounded-lg transition-colors ${sourceLang === 'auto' ? 'text-gray-300 cursor-not-allowed' : 'hover:bg-gray-100 text-gray-600'}`}
+              title={sourceLang === 'auto' ? '自動偵測模式無法交換' : '交換語言'}
+            >
+              <ArrowRightLeft className="w-5 h-5" />
+            </button>
+
             <select
               value={targetLang}
               onChange={(e) => setTargetLang(e.target.value)}
@@ -477,7 +506,7 @@ const VoiceTranslator = () => {
 
           {/* Manual input */}
           <div className="mb-3 p-3 bg-white rounded-lg border border-gray-200">
-            <label className="text-xs font-medium text-gray-700 mb-2 block">手動輸入（自動偵測語言）</label>
+            <label className="text-xs font-medium text-gray-700 mb-2 block">手動輸入{sourceLang === 'auto' ? '（自動偵測語言）' : `（${langName(sourceLang)}）`}</label>
             <div className="flex gap-2">
               <input
                 type="text"
@@ -485,7 +514,7 @@ const VoiceTranslator = () => {
                 onChange={(e) => setSourceText(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && sourceText.trim()) {
-                    translateAndAddToHistory(sourceText.trim(), targetLang);
+                    translateAndAddToHistory(sourceText.trim(), targetLang, sourceLang);
                     setSourceText('');
                   }
                 }}
@@ -493,7 +522,7 @@ const VoiceTranslator = () => {
                 className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:border-blue-500"
               />
               <button
-                onClick={() => { if (sourceText.trim()) { translateAndAddToHistory(sourceText.trim(), targetLang); setSourceText(''); } }}
+                onClick={() => { if (sourceText.trim()) { translateAndAddToHistory(sourceText.trim(), targetLang, sourceLang); setSourceText(''); } }}
                 disabled={!sourceText.trim()}
                 className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:bg-gray-300 disabled:cursor-not-allowed text-sm"
               >
