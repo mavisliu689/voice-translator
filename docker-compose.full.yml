@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  # 後端服務
+  backend:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: voice-translator-backend
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      # 從 .env 檔案讀取 API Key（安全方式）
+      - GOOGLE_TRANSLATE_API_KEY=${GOOGLE_TRANSLATE_API_KEY}
+      - FRONTEND_URL=http://localhost:8080
+    restart: unless-stopped
+    networks:
+      - translator-network
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3001/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # 前端服務
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # 設定後端 API URL（構建時）
+        VITE_BACKEND_URL: http://localhost:3001
+    container_name: voice-translator-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - translator-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  translator-network:
+    driver: bridge
+
+volumes:
+  # 可選：如果需要持久化日誌
+  logs:

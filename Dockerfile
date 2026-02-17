@@ -1,36 +1,31 @@
-# 階段 1: 建構階段
-FROM node:20-alpine AS builder
-
-# 設定工作目錄
+# Stage 1: Build frontend
+FROM node:22-alpine AS frontend-builder
 WORKDIR /app
-
-# 複製 package.json 和 package-lock.json
 COPY package*.json ./
-
-# 安裝依賴
 RUN npm ci
-
-# 複製源代碼
 COPY . .
-
-# 建構應用程式
+ENV VITE_BACKEND_URL=""
 RUN npm run build
 
-# 階段 2: 生產階段
-FROM nginx:alpine
+# Stage 2: Production - Node.js serves both frontend + backend API
+FROM node:22-alpine
+WORKDIR /app
 
-# 從建構階段複製建構好的檔案
-COPY --from=builder /app/dist /usr/share/nginx/html
+# Copy server
+COPY server/package*.json ./server/
+RUN cd server && npm ci --omit=dev
 
-# 複製自定義 nginx 配置（用於 SPA 路由）
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY server/ ./server/
 
-# 暴露端口
-EXPOSE 80
+# Copy built frontend
+COPY --from=frontend-builder /app/dist ./dist
 
-# 健康檢查
+EXPOSE 3001
+
+ENV NODE_ENV=production
+ENV PORT=3001
+
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost || exit 1
+  CMD wget --no-verbose --tries=1 --spider http://localhost:3001/health || exit 1
 
-# 啟動 nginx
-CMD ["nginx", "-g", "daemon off;"]
+CMD ["node", "server/index.js"]
