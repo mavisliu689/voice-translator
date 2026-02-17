@@ -21,21 +21,25 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false,
 }));
 
-// CORS
-const allowedOrigins = process.env.FRONTEND_URL
-  ? process.env.FRONTEND_URL.split(',')
-  : ['http://localhost:5173'];
+// CORS - allow all origins by default for iframe embedding
+// Set ALLOWED_ORIGINS env var to restrict (comma-separated), e.g. "https://example.com,https://other.com"
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
+  : ['*'];
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (same-origin, curl, etc.)
+    // Allow requests with no origin (same-origin, curl, mobile apps, etc.)
     if (!origin) return callback(null, true);
-    if (allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    }
-    callback(null, true); // Allow all for iframe embedding
+    // Allow all origins
+    if (allowedOrigins.includes('*')) return callback(null, true);
+    // Check specific allowed origins
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    callback(new Error(`Origin ${origin} not allowed by CORS`));
   },
-  credentials: true
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: false, // No cookies/sessions needed; false allows wildcard origin
 }));
 
 app.use(morgan('combined'));
