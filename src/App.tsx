@@ -109,6 +109,26 @@ const VoiceTranslator = () => {
   useEffect(() => { targetLangRef.current = targetLang; }, [targetLang]);
   useEffect(() => { sourceLangRef.current = sourceLang; }, [sourceLang]);
 
+  // Lock body scroll in embed mode to prevent iOS bounce / page scroll
+  useEffect(() => {
+    if (!isEmbed) return;
+    const html = document.documentElement;
+    const body = document.body;
+    const styles = 'overflow:hidden;position:fixed;width:100%;height:100%;';
+    html.style.cssText += styles;
+    body.style.cssText += styles;
+    return () => {
+      html.style.overflow = '';
+      html.style.position = '';
+      html.style.width = '';
+      html.style.height = '';
+      body.style.overflow = '';
+      body.style.position = '';
+      body.style.width = '';
+      body.style.height = '';
+    };
+  }, [isEmbed]);
+
   useEffect(() => {
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
       setIsSupported(true);
@@ -471,7 +491,7 @@ const VoiceTranslator = () => {
       const freePercent = freeLimit > 0 ? Math.min(100, ((freeLimit - freeRemaining) / freeLimit) * 100) : 0;
 
       return (
-        <div className="h-screen w-screen flex flex-col overflow-hidden" style={{ background: '#000000', color: '#ffffff', fontFamily: 'system-ui, sans-serif' }}>
+        <div className="h-screen w-screen flex flex-col overflow-hidden fixed inset-0" style={{ background: '#000000', color: '#ffffff', fontFamily: 'system-ui, sans-serif', touchAction: 'none' }}>
 
           {/* Top bar */}
           <div className="flex items-center gap-3 px-5 py-4 flex-shrink-0">
@@ -502,7 +522,7 @@ const VoiceTranslator = () => {
             ))}
           </div>
 
-          <div className="flex-1 overflow-y-auto px-5 pb-6" style={{ scrollbarWidth: 'thin', scrollbarColor: '#333 transparent' }}>
+          <div className="flex-1 overflow-y-auto px-5 pb-6" style={{ scrollbarWidth: 'thin', scrollbarColor: '#333 transparent', touchAction: 'pan-y', WebkitOverflowScrolling: 'touch' } as React.CSSProperties}>
 
             {/* Stats grid */}
             <div className="grid grid-cols-2 gap-3 mb-6">
@@ -625,7 +645,7 @@ const VoiceTranslator = () => {
     );
 
     return (
-      <div className="h-screen w-screen flex flex-col overflow-hidden" style={{ background: '#000000', color: '#ffffff', fontFamily: 'system-ui, sans-serif' }}>
+      <div className="h-screen w-screen flex flex-col overflow-hidden fixed inset-0" style={{ background: '#000000', color: '#ffffff', fontFamily: 'system-ui, sans-serif', touchAction: 'none' }}>
 
         {langPickerOverlay}
 
@@ -662,7 +682,7 @@ const VoiceTranslator = () => {
         )}
 
         {/* Translation history -- scrollable */}
-        <div className="flex-1 overflow-y-auto px-5 pb-3" style={{ scrollbarWidth: 'thin', scrollbarColor: '#222 transparent' }}>
+        <div className="flex-1 overflow-y-auto px-5 pb-3" style={{ scrollbarWidth: 'thin', scrollbarColor: '#222 transparent', touchAction: 'pan-y', WebkitOverflowScrolling: 'touch' } as React.CSSProperties}>
           {translationHistory.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full gap-4">
               <div className="w-20 h-20 rounded-full flex items-center justify-center" style={{ background: 'rgba(167,139,250,0.1)' }}>
