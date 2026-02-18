@@ -491,17 +491,18 @@ const VoiceTranslator = () => {
       const freePercent = freeLimit > 0 ? Math.min(100, ((freeLimit - freeRemaining) / freeLimit) * 100) : 0;
 
       return (
-        <div className="h-screen w-screen flex flex-col overflow-hidden fixed inset-0" style={{ background: '#000000', color: '#ffffff', fontFamily: 'system-ui, sans-serif', touchAction: 'none' }}>
+        <div className="h-screen w-screen flex flex-col overflow-hidden fixed inset-0" style={{ background: '#faf9f6', color: '#2d2d2d', fontFamily: 'system-ui, sans-serif', touchAction: 'none' }}>
 
           {/* Top bar */}
           <div className="flex items-center gap-3 px-5 py-4 flex-shrink-0">
             <button
               onClick={() => setEmbedView('translate')}
-              className="p-1.5 rounded-xl hover:bg-white/5 transition-colors"
+              className="p-1.5 rounded-xl transition-colors"
+              style={{ color: '#888888' }}
             >
-              <ChevronLeft className="w-5 h-5" style={{ color: '#888' }} />
+              <ChevronLeft className="w-5 h-5" />
             </button>
-            <span className="text-sm tracking-widest uppercase" style={{ color: '#666' }}>用量統計</span>
+            <span className="text-xs tracking-widest uppercase" style={{ color: '#888888', letterSpacing: '0.15em' }}>用量統計</span>
           </div>
 
           {/* Period tabs */}
@@ -512,9 +513,10 @@ const VoiceTranslator = () => {
                 onClick={() => setUsagePeriod(key)}
                 className="px-4 py-1.5 rounded-full text-sm transition-all"
                 style={{
-                  background: usagePeriod === key ? '#a78bfa' : '#111111',
-                  color: usagePeriod === key ? '#000000' : '#888',
+                  background: usagePeriod === key ? '#c8956c' : '#ffffff',
+                  color: usagePeriod === key ? '#ffffff' : '#888888',
                   fontWeight: usagePeriod === key ? 600 : 400,
+                  boxShadow: usagePeriod === key ? 'none' : '0 1px 3px rgba(0,0,0,0.06)',
                 }}
               >
                 {label}
@@ -522,7 +524,7 @@ const VoiceTranslator = () => {
             ))}
           </div>
 
-          <div className="flex-1 overflow-y-auto px-5 pb-6" style={{ scrollbarWidth: 'thin', scrollbarColor: '#333 transparent', touchAction: 'pan-y', WebkitOverflowScrolling: 'touch' } as React.CSSProperties}>
+          <div className="flex-1 overflow-y-auto px-5 pb-6" style={{ scrollbarWidth: 'thin', scrollbarColor: '#e8e4df transparent', touchAction: 'pan-y', WebkitOverflowScrolling: 'touch' } as React.CSSProperties}>
 
             {/* Stats grid */}
             <div className="grid grid-cols-2 gap-3 mb-6">
@@ -532,47 +534,47 @@ const VoiceTranslator = () => {
                 { value: `$${estimatedCost.toFixed(3)}`, label: '估算費用' },
                 { value: freeRemaining.toLocaleString(), label: '免費額度剩餘' },
               ].map((card, i) => (
-                <div key={i} className="rounded-2xl p-5" style={{ background: '#111111' }}>
-                  <p className="text-2xl font-light mb-1" style={{ color: '#ffffff' }}>{card.value}</p>
-                  <p className="text-xs" style={{ color: '#666' }}>{card.label}</p>
+                <div key={i} className="rounded-2xl p-5" style={{ background: '#ffffff', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+                  <p className="text-2xl font-light mb-1" style={{ color: '#2d2d2d' }}>{card.value}</p>
+                  <p className="text-xs" style={{ color: '#888888' }}>{card.label}</p>
                 </div>
               ))}
             </div>
 
             {/* Free quota progress bar */}
-            <div className="rounded-2xl p-5 mb-6" style={{ background: '#111111' }}>
+            <div className="rounded-2xl p-5 mb-6" style={{ background: '#ffffff', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
               <div className="flex justify-between items-center mb-3">
-                <p className="text-xs" style={{ color: '#666' }}>免費額度使用進度</p>
-                <p className="text-xs" style={{ color: '#888' }}>{freePercent.toFixed(1)}%</p>
+                <p className="text-xs" style={{ color: '#888888' }}>免費額度使用進度</p>
+                <p className="text-xs" style={{ color: '#2d2d2d' }}>{freePercent.toFixed(1)}%</p>
               </div>
-              <div className="w-full h-2 rounded-full" style={{ background: '#222' }}>
+              <div className="w-full h-2 rounded-full" style={{ background: '#f0ede8' }}>
                 <div
                   className="h-2 rounded-full transition-all duration-500"
-                  style={{ width: `${freePercent}%`, background: 'linear-gradient(135deg, #a78bfa, #8b5cf6)' }}
+                  style={{ width: `${freePercent}%`, background: '#c8956c' }}
                 />
               </div>
             </div>
 
             {/* Recent translations */}
             <div className="mb-2">
-              <p className="text-xs tracking-widest uppercase mb-3" style={{ color: '#666' }}>最近翻譯</p>
+              <p className="text-xs tracking-widest uppercase mb-3" style={{ color: '#888888', letterSpacing: '0.15em' }}>最近翻譯</p>
               <div className="space-y-2">
                 {usageRecent.length === 0 ? (
-                  <p className="text-sm py-6 text-center" style={{ color: '#444' }}>暫無記錄</p>
+                  <p className="text-sm py-6 text-center" style={{ color: '#888888' }}>暫無記錄</p>
                 ) : (
                   usageRecent.map((record: any, idx: number) => (
-                    <div key={idx} className="rounded-2xl p-4" style={{ background: '#111111' }}>
+                    <div key={idx} className="rounded-2xl p-4" style={{ background: '#ffffff', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
                       <div className="flex items-center justify-between mb-1">
-                        <span className="text-sm" style={{ color: '#aaa' }}>
-                          {langName(record.source_lang || '?')} <span style={{ color: '#555' }}>&rarr;</span> {langName(record.target_lang || '?')}
+                        <span className="text-sm" style={{ color: '#2d2d2d' }}>
+                          {langName(record.source_lang || '?')} <span style={{ color: '#e8e4df' }}>&rarr;</span> {langName(record.target_lang || '?')}
                         </span>
-                        <span className="text-xs" style={{ color: '#444' }}>
+                        <span className="text-xs" style={{ color: '#888888' }}>
                           {record.timestamp ? new Date(record.timestamp).toLocaleString('zh-TW', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}
                         </span>
                       </div>
                       <div className="flex items-center gap-2">
-                        <span className="text-xs" style={{ color: '#666' }}>{record.char_count ?? 0}字</span>
-                        <span className="text-xs" style={{ color: '#444' }}>~${(record.estimated_cost_usd ?? 0).toFixed(4)}</span>
+                        <span className="text-xs" style={{ color: '#888888' }}>{record.char_count ?? 0}字</span>
+                        <span className="text-xs" style={{ color: '#888888' }}>~${(record.estimated_cost_usd ?? 0).toFixed(4)}</span>
                       </div>
                     </div>
                   ))
@@ -590,28 +592,28 @@ const VoiceTranslator = () => {
     const langPickerOverlay = showLangPicker && (
       <div
         className="fixed inset-0 z-50 flex items-end justify-center"
-        style={{ background: 'rgba(0,0,0,0.7)' }}
+        style={{ background: 'rgba(0,0,0,0.3)' }}
         onClick={() => setShowLangPicker(null)}
       >
         <div
           className="w-full max-w-md rounded-t-3xl p-6 pb-8"
-          style={{ background: '#111111' }}
+          style={{ background: '#ffffff' }}
           onClick={(e) => e.stopPropagation()}
         >
           <div className="flex justify-center mb-4">
-            <div className="w-10 h-1 rounded-full" style={{ background: '#333' }} />
+            <div className="w-10 h-1 rounded-full" style={{ background: '#e8e4df' }} />
           </div>
-          <p className="text-sm tracking-widest uppercase mb-5 text-center" style={{ color: '#666' }}>
+          <p className="text-xs tracking-widest uppercase mb-5 text-center" style={{ color: '#888888', letterSpacing: '0.15em' }}>
             {showLangPicker === 'source' ? '來源語言' : '目標語言'}
           </p>
-          <div className="space-y-1 max-h-[50vh] overflow-y-auto" style={{ scrollbarWidth: 'thin', scrollbarColor: '#333 transparent' }}>
+          <div className="space-y-1 max-h-[50vh] overflow-y-auto" style={{ scrollbarWidth: 'thin', scrollbarColor: '#e8e4df transparent' }}>
             {showLangPicker === 'source' && (
               <button
                 onClick={() => { setSourceLang('auto'); setShowLangPicker(null); }}
                 className="w-full text-left px-4 py-3 rounded-2xl text-lg transition-colors"
                 style={{
-                  background: sourceLang === 'auto' ? 'rgba(167,139,250,0.15)' : 'transparent',
-                  color: sourceLang === 'auto' ? '#a78bfa' : '#aaa',
+                  background: sourceLang === 'auto' ? 'rgba(200,149,108,0.1)' : 'transparent',
+                  color: sourceLang === 'auto' ? '#c8956c' : '#2d2d2d',
                 }}
               >
                 自動偵測
@@ -631,8 +633,8 @@ const VoiceTranslator = () => {
                   }}
                   className="w-full text-left px-4 py-3 rounded-2xl text-lg transition-colors"
                   style={{
-                    background: isActive ? 'rgba(167,139,250,0.15)' : 'transparent',
-                    color: isActive ? '#a78bfa' : '#aaa',
+                    background: isActive ? 'rgba(200,149,108,0.1)' : 'transparent',
+                    color: isActive ? '#c8956c' : '#2d2d2d',
                   }}
                 >
                   {lang.name}
@@ -645,112 +647,116 @@ const VoiceTranslator = () => {
     );
 
     return (
-      <div className="h-screen w-screen flex flex-col overflow-hidden fixed inset-0" style={{ background: '#000000', color: '#ffffff', fontFamily: 'system-ui, sans-serif', touchAction: 'none' }}>
+      <div className="h-screen w-screen flex flex-col overflow-hidden fixed inset-0" style={{ background: '#faf9f6', color: '#2d2d2d', fontFamily: 'system-ui, sans-serif', touchAction: 'none' }}>
 
         {langPickerOverlay}
 
         {/* Top bar */}
-        <div className="flex items-center justify-between px-5 py-4 flex-shrink-0">
-          <span className="text-sm tracking-widest uppercase" style={{ color: '#666' }}>翻譯</span>
+        <div className="flex items-center justify-between px-5 py-4 flex-shrink-0" style={{ borderBottom: '1px solid #e8e4df' }}>
+          <span className="text-xs tracking-widest uppercase" style={{ color: '#888888', letterSpacing: '0.15em' }}>翻譯</span>
           <button
             onClick={() => setEmbedView('usage')}
-            className="p-2 rounded-xl hover:bg-white/5 transition-colors"
+            className="p-2 rounded-xl transition-colors"
+            style={{ color: '#888888' }}
           >
-            <BarChart3 className="w-4 h-4" style={{ color: '#666' }} />
+            <BarChart3 className="w-4 h-4" />
           </button>
         </div>
 
         {/* Error banner */}
         {error && (
-          <div className="mx-5 mb-3 px-4 py-3 rounded-2xl flex items-start gap-3 flex-shrink-0" style={{ background: '#1a0a0a', border: '1px solid rgba(248,113,113,0.2)' }}>
-            <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" style={{ color: '#f87171' }} />
-            <span className="text-sm" style={{ color: '#fca5a5' }}>{error}</span>
+          <div className="mx-5 mt-3 mb-3 px-4 py-3 rounded-2xl flex items-start gap-3 flex-shrink-0" style={{ background: '#fef2f2', border: '1px solid #fecaca' }}>
+            <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" style={{ color: '#c75050' }} />
+            <span className="text-sm" style={{ color: '#c75050' }}>{error}</span>
           </div>
         )}
 
-        {/* Recognizing indicator - lavender purple tones */}
+        {/* Live speech recognition indicator */}
         {(currentSentence || interimText) && (
-          <div className="mx-5 mb-3 px-4 py-3 rounded-2xl flex items-start gap-3 flex-shrink-0" style={{ background: 'rgba(167,139,250,0.08)', border: '1px solid rgba(167,139,250,0.15)' }}>
+          <div className="mx-5 mt-3 mb-3 px-4 py-3 rounded-2xl flex items-start gap-3 flex-shrink-0" style={{ background: '#ffffff', border: '1px solid #e8e4df', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
             <div className="animate-pulse mt-0.5">
-              <Mic className="w-4 h-4" style={{ color: '#a78bfa' }} />
+              <Mic className="w-4 h-4" style={{ color: '#c8956c' }} />
             </div>
-            <span className="text-sm" style={{ color: '#c4b5fd' }}>
-              {currentSentence}
-              {interimText && <span style={{ color: '#7c6bbd', fontStyle: 'italic' }}> {interimText}</span>}
-            </span>
+            <div className="flex-1">
+              <p className="text-xs tracking-wider uppercase mb-1" style={{ color: '#c8956c', letterSpacing: '0.1em' }}>正在識別...</p>
+              <p className="text-sm" style={{ color: '#2d2d2d' }}>
+                {currentSentence}
+                {interimText && <span style={{ color: '#888888', fontStyle: 'italic' }}> {interimText}</span>}
+              </p>
+            </div>
           </div>
         )}
 
         {/* Translation history -- scrollable */}
-        <div className="flex-1 overflow-y-auto px-5 pb-3" style={{ scrollbarWidth: 'thin', scrollbarColor: '#222 transparent', touchAction: 'pan-y', WebkitOverflowScrolling: 'touch' } as React.CSSProperties}>
+        <div className="flex-1 overflow-y-auto px-5 pb-3" style={{ scrollbarWidth: 'thin', scrollbarColor: '#e8e4df transparent', touchAction: 'pan-y', WebkitOverflowScrolling: 'touch' } as React.CSSProperties}>
           {translationHistory.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full gap-4">
-              <div className="w-20 h-20 rounded-full flex items-center justify-center" style={{ background: 'rgba(167,139,250,0.1)' }}>
-                <Mic className="w-8 h-8" style={{ color: '#a78bfa' }} />
+              <div className="w-20 h-20 rounded-full flex items-center justify-center" style={{ background: 'rgba(200,149,108,0.1)' }}>
+                <Mic className="w-8 h-8" style={{ color: '#c8956c' }} />
               </div>
-              <p className="text-base" style={{ color: '#444' }}>輕觸開始翻譯</p>
+              <p className="text-sm tracking-wider" style={{ color: '#888888' }}>輕觸開始翻譯</p>
             </div>
           ) : (
             <div className="space-y-4 py-2">
               {translationHistory.map((item) => (
                 <div
                   key={item.id}
-                  className="rounded-3xl p-6"
-                  style={{ background: '#111111' }}
+                  className="rounded-2xl p-6"
+                  style={{ background: '#ffffff', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}
                 >
                   {/* Source text */}
                   <div className="flex items-start gap-3 mb-4">
                     <button
                       onClick={() => speakText(item.source, item.detectedLang)}
-                      className="flex-shrink-0 mt-1 w-8 h-8 flex items-center justify-center rounded-full transition-colors hover:bg-white/5"
-                      style={{ background: 'rgba(167,139,250,0.15)' }}
+                      className="flex-shrink-0 mt-1 w-8 h-8 flex items-center justify-center rounded-full transition-colors"
+                      style={{ background: 'rgba(200,149,108,0.1)' }}
                       title="Play source"
                     >
                       <svg width="10" height="12" viewBox="0 0 10 12" fill="none">
-                        <path d="M1 1L9 6L1 11V1Z" fill="#a78bfa" />
+                        <path d="M1 1L9 6L1 11V1Z" fill="#c8956c" />
                       </svg>
                     </button>
                     <div className="flex-1 min-w-0">
-                      <p className="text-xs mb-1.5" style={{ color: '#555' }}>
+                      <p className="text-xs mb-1.5 tracking-wider uppercase" style={{ color: '#888888', letterSpacing: '0.1em' }}>
                         {langName(item.detectedLang)}
-                        {sourceLang === 'auto' && <span style={{ color: '#a78bfa' }}> &middot; auto</span>}
+                        {sourceLang === 'auto' && <span style={{ color: '#c8956c' }}> &middot; auto</span>}
                       </p>
-                      <p className="text-base text-gray-400 leading-relaxed">{item.source}</p>
+                      <p className="text-sm italic leading-relaxed" style={{ color: '#888888' }}>{item.source}</p>
                     </div>
                   </div>
 
                   {/* Divider */}
-                  <div className="mb-4" style={{ height: 1, background: '#1a1a1a' }} />
+                  <div className="mb-4" style={{ height: 1, background: '#e8e4df' }} />
 
                   {/* Translation */}
                   <div className="flex items-start gap-3">
                     <button
                       onClick={() => speakText(item.translation, item.targetLang)}
-                      className="flex-shrink-0 mt-1 w-8 h-8 flex items-center justify-center rounded-full transition-colors hover:bg-white/5"
-                      style={{ background: 'rgba(167,139,250,0.15)' }}
+                      className="flex-shrink-0 mt-1 w-8 h-8 flex items-center justify-center rounded-full transition-colors"
+                      style={{ background: 'rgba(200,149,108,0.1)' }}
                       title="Play translation"
                     >
                       <svg width="10" height="12" viewBox="0 0 10 12" fill="none">
-                        <path d="M1 1L9 6L1 11V1Z" fill="#a78bfa" />
+                        <path d="M1 1L9 6L1 11V1Z" fill="#c8956c" />
                       </svg>
                     </button>
                     <div className="flex-1 min-w-0">
-                      <p className="text-xs mb-1.5" style={{ color: '#555' }}>{langName(item.targetLang)}</p>
-                      <p className="text-2xl font-light leading-snug" style={{ color: '#ffffff' }}>{item.translation}</p>
+                      <p className="text-xs mb-1.5 tracking-wider uppercase" style={{ color: '#888888', letterSpacing: '0.1em' }}>{langName(item.targetLang)}</p>
+                      <p className="text-xl font-light leading-snug" style={{ color: '#2d2d2d' }}>{item.translation}</p>
                     </div>
                     {/* Copy button */}
                     <button
                       onClick={() => { navigator.clipboard.writeText(item.translation); setCopiedItem({ id: item.id, type: 'translation' }); setTimeout(() => setCopiedItem(null), 2000); }}
-                      className="flex-shrink-0 self-end p-1.5 rounded-lg hover:bg-white/5 transition-colors"
+                      className="flex-shrink-0 self-end p-1.5 rounded-lg transition-colors"
                       title="Copy"
                     >
-                      <Copy className="w-3.5 h-3.5" style={{ color: copiedItem?.id === item.id && copiedItem?.type === 'translation' ? '#a78bfa' : '#333' }} />
+                      <Copy className="w-3.5 h-3.5" style={{ color: copiedItem?.id === item.id && copiedItem?.type === 'translation' ? '#c8956c' : '#888888' }} />
                     </button>
                   </div>
 
                   {/* Cost info */}
                   <div className="flex justify-end mt-3">
-                    <span className="text-xs" style={{ color: '#333' }}>
+                    <span className="text-xs" style={{ color: '#888888' }}>
                       ~${(item.estimated_cost_usd ?? 0).toFixed(3)} &middot; {item.char_count ?? 0}字
                     </span>
                   </div>
@@ -767,12 +773,10 @@ const VoiceTranslator = () => {
             disabled={!isSupported}
             className="w-16 h-16 rounded-full flex items-center justify-center shadow-lg transition-all focus:outline-none relative"
             style={{
-              background: isListening
-                ? 'linear-gradient(135deg, #ef4444, #dc2626)'
-                : 'linear-gradient(135deg, #a78bfa, #8b5cf6)',
+              background: isListening ? '#c75050' : '#c8956c',
               boxShadow: isListening
-                ? '0 4px 30px rgba(239,68,68,0.3)'
-                : '0 4px 30px rgba(167,139,250,0.3)',
+                ? '0 4px 20px rgba(199,80,80,0.3)'
+                : '0 4px 20px rgba(200,149,108,0.3)',
             }}
             title={isListening ? 'Stop' : 'Start recording'}
           >
@@ -785,18 +789,18 @@ const VoiceTranslator = () => {
             {isListening && (
               <span
                 className="absolute w-16 h-16 rounded-full soft-pulse"
-                style={{ background: 'rgba(239,68,68,0.3)', pointerEvents: 'none' }}
+                style={{ background: 'rgba(199,80,80,0.25)', pointerEvents: 'none' }}
               />
             )}
           </button>
         </div>
 
         {/* Bottom bar */}
-        <div className="flex-shrink-0 pb-4 px-5 pt-1" style={{ background: '#000000' }}>
+        <div className="flex-shrink-0 pb-4 px-5 pt-1" style={{ background: '#faf9f6', borderTop: '1px solid #e8e4df' }}>
           {/* Text input */}
           <div
             className="flex items-center gap-2 rounded-full px-5 py-3.5 mb-4"
-            style={{ background: '#1a1a1a' }}
+            style={{ background: '#f0ede8' }}
           >
             <input
               type="text"
@@ -810,13 +814,13 @@ const VoiceTranslator = () => {
               }}
               placeholder="輸入文字翻譯..."
               className="flex-1 bg-transparent text-base outline-none"
-              style={{ color: '#ffffff', caretColor: '#a78bfa' }}
+              style={{ color: '#2d2d2d', caretColor: '#c8956c' }}
             />
             {sourceText.trim() && (
               <button
                 onClick={() => { translateAndAddToHistory(sourceText.trim(), targetLang, sourceLang); setSourceText(''); }}
                 className="flex-shrink-0 px-4 py-1.5 rounded-full text-sm font-medium transition-colors"
-                style={{ background: 'linear-gradient(135deg, #a78bfa, #8b5cf6)', color: '#fff' }}
+                style={{ background: '#c8956c', color: '#fff' }}
               >
                 Go
               </button>
@@ -829,7 +833,7 @@ const VoiceTranslator = () => {
             <button
               onClick={() => setShowLangPicker('source')}
               className="text-lg transition-colors hover:opacity-80"
-              style={{ color: '#888' }}
+              style={{ color: '#888888' }}
             >
               {sourceLang === 'auto' ? `自動${detectedLang ? ` (${langName(detectedLang)})` : ''}` : langName(sourceLang)}
             </button>
@@ -845,7 +849,7 @@ const VoiceTranslator = () => {
               }}
               disabled={sourceLang === 'auto'}
               className="flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-full transition-colors"
-              style={{ color: sourceLang === 'auto' ? '#333' : '#a78bfa' }}
+              style={{ color: sourceLang === 'auto' ? '#e8e4df' : '#c8956c' }}
               title={sourceLang === 'auto' ? 'Cannot swap in auto-detect mode' : 'Swap languages'}
             >
               <ArrowRightLeft className="w-4 h-4" />
@@ -855,7 +859,7 @@ const VoiceTranslator = () => {
             <button
               onClick={() => setShowLangPicker('target')}
               className="text-lg transition-colors hover:opacity-80"
-              style={{ color: '#ffffff' }}
+              style={{ color: '#2d2d2d' }}
             >
               {langName(targetLang)}
             </button>
