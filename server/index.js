@@ -5,12 +5,40 @@ import helmet from 'helmet';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
+import Database from 'better-sqlite3';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 dotenv.config();
+
+// ---------------------------------------------------------------------------
+// SQLite database initialization
+// ---------------------------------------------------------------------------
+const dataDir = path.join(__dirname, 'data');
+fs.mkdirSync(dataDir, { recursive: true });
+
+const db = new Database(path.join(dataDir, 'usage.db'));
+db.pragma('journal_mode = WAL');
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS translations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT DEFAULT (datetime('now')),
+    source_lang TEXT,
+    target_lang TEXT,
+    char_count INTEGER,
+    estimated_cost_usd REAL
+  )
+`);
+
+// Prepare statements for performance
+const insertTranslation = db.prepare(`
+  INSERT INTO translations (source_lang, target_lang, char_count, estimated_cost_usd)
+  VALUES (@source_lang, @target_lang, @char_count, @estimated_cost_usd)
+`);
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -140,12 +168,29 @@ app.post('/api/translate', translationLimiter, async (req, res) => {
 
     if (data.data?.translations?.[0]?.translatedText) {
       const translation = data.data.translations[0];
+      const char_count = text.length;
+      const estimated_cost_usd = char_count * 0.00002;
+
+      // Record usage in SQLite (non-blocking -- errors must not break the response)
+      try {
+        insertTranslation.run({
+          source_lang: source || translation.detectedSourceLanguage,
+          target_lang: targetLanguage,
+          char_count,
+          estimated_cost_usd,
+        });
+      } catch (dbErr) {
+        console.error('DB insert error:', dbErr);
+      }
+
       res.json({
         success: true,
         translation: translation.translatedText,
         detectedSourceLanguage: translation.detectedSourceLanguage || source,
         source: source || translation.detectedSourceLanguage,
         target: targetLanguage,
+        char_count,
+        estimated_cost_usd,
         timestamp: new Date().toISOString()
       });
     } else {
@@ -185,6 +230,99 @@ app.get('/api/languages', (req, res) => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Usage tracking endpoints
+// ---------------------------------------------------------------------------
+
+// GET /api/usage/summary -- current month totals with free-tier adjustment
+app.get('/api/usage/summary', (req, res) => {
+  try {
+    const now = new Date();
+    const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const monthPrefix = month + '%';
+
+    const row = db.prepare(`
+      SELECT
+        COALESCE(SUM(char_count), 0)          AS total_chars,
+        COALESCE(SUM(estimated_cost_usd), 0)  AS total_cost_estimated,
+        COUNT(*)                                AS total_requests
+      FROM translations
+      WHERE timestamp LIKE @monthPrefix
+    `).get({ monthPrefix });
+
+    const totalChars = row.total_chars;
+    const freeTierLimit = 500000;
+    const freeRemaining = Math.max(0, freeTierLimit - totalChars);
+    const actualCost = totalChars <= freeTierLimit
+      ? 0
+      : (totalChars - freeTierLimit) * 0.00002;
+
+    res.json({
+      total_chars: totalChars,
+      total_cost_estimated: row.total_cost_estimated,
+      actual_cost: actualCost,
+      total_requests: row.total_requests,
+      free_remaining: freeRemaining,
+      free_tier_limit: freeTierLimit,
+      month,
+    });
+  } catch (error) {
+    console.error('Usage summary error:', error);
+    res.status(500).json({ error: 'Failed to retrieve usage summary' });
+  }
+});
+
+// GET /api/usage/history?from=YYYY-MM-DD&to=YYYY-MM-DD -- daily breakdown
+app.get('/api/usage/history', (req, res) => {
+  try {
+    const now = new Date();
+    const defaultFrom = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+    const defaultTo = now.toISOString().slice(0, 10);
+
+    const from = req.query.from || defaultFrom;
+    const to = req.query.to || defaultTo;
+
+    const daily = db.prepare(`
+      SELECT
+        substr(timestamp, 1, 10)              AS date,
+        SUM(char_count)                        AS total_chars,
+        SUM(estimated_cost_usd)                AS total_cost,
+        COUNT(*)                                AS request_count
+      FROM translations
+      WHERE substr(timestamp, 1, 10) >= @from
+        AND substr(timestamp, 1, 10) <= @to
+      GROUP BY substr(timestamp, 1, 10)
+      ORDER BY date ASC
+    `).all({ from, to });
+
+    res.json({ from, to, daily });
+  } catch (error) {
+    console.error('Usage history error:', error);
+    res.status(500).json({ error: 'Failed to retrieve usage history' });
+  }
+});
+
+// GET /api/usage/recent -- last 50 translation records
+app.get('/api/usage/recent', (req, res) => {
+  try {
+    const records = db.prepare(`
+      SELECT id, timestamp, source_lang, target_lang, char_count, estimated_cost_usd
+      FROM translations
+      ORDER BY timestamp DESC
+      LIMIT 50
+    `).all();
+
+    res.json({ records });
+  } catch (error) {
+    console.error('Usage recent error:', error);
+    res.status(500).json({ error: 'Failed to retrieve recent records' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Static files & SPA fallback
+// ---------------------------------------------------------------------------
+
 // Serve static frontend files in production
 const publicPath = path.join(__dirname, '..', 'dist');
 app.use(express.static(publicPath));
@@ -210,7 +348,8 @@ app.listen(PORT, () => {
   console.log(`🚀 後端伺服器運行在 http://localhost:${PORT}`);
   console.log(`📝 環境: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🔑 API Key 狀態: ${process.env.GOOGLE_TRANSLATE_API_KEY ? '已設定' : '未設定'}`);
+  console.log(`📊 Usage DB: ${path.join(dataDir, 'usage.db')}`);
 });
 
-process.on('SIGTERM', () => { console.log('SIGTERM received'); process.exit(0); });
-process.on('SIGINT', () => { console.log('SIGINT received'); process.exit(0); });
+process.on('SIGTERM', () => { console.log('SIGTERM received'); db.close(); process.exit(0); });
+process.on('SIGINT', () => { console.log('SIGINT received'); db.close(); process.exit(0); });

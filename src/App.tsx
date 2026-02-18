@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Mic, MicOff, Volume2, ArrowRightLeft, Copy, AlertCircle, Shield, Settings, BookmarkPlus, Share2, LayoutGrid } from 'lucide-react';
+import { Mic, MicOff, Volume2, ArrowRightLeft, Copy, AlertCircle, Shield, BarChart3, ChevronLeft } from 'lucide-react';
 
 const languages = [
   { code: 'zh-TW', name: '繁體中文', region: 'Taiwan' },
@@ -45,6 +45,23 @@ const speechLangMap: Record<string, string> = {
   'id': 'id-ID', 'it': 'it-IT',
 };
 
+// Pulse keyframes injected once
+const pulseStyleId = 'embed-pulse-style';
+if (typeof document !== 'undefined' && !document.getElementById(pulseStyleId)) {
+  const style = document.createElement('style');
+  style.id = pulseStyleId;
+  style.textContent = `
+    @keyframes softPulse {
+      0%, 100% { transform: scale(1); opacity: 0.5; }
+      50% { transform: scale(1.35); opacity: 0; }
+    }
+    .soft-pulse {
+      animation: softPulse 2s ease-in-out infinite;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
 const VoiceTranslator = () => {
   // Check embed mode from URL
   const isEmbed = new URLSearchParams(window.location.search).get('mode') === 'embed';
@@ -67,6 +84,8 @@ const VoiceTranslator = () => {
     detectedLang: string;
     targetLang: string;
     timestamp: string;
+    char_count?: number;
+    estimated_cost_usd?: number;
   }>>([]);
   const [currentSentence, setCurrentSentence] = useState('');
 
@@ -77,6 +96,13 @@ const VoiceTranslator = () => {
   const isListeningRef = useRef(false);
   const targetLangRef = useRef(targetLang);
   const sourceLangRef = useRef(sourceLang);
+
+  // Embed-specific state
+  const [embedView, setEmbedView] = useState<'translate' | 'usage'>('translate');
+  const [showLangPicker, setShowLangPicker] = useState<'source' | 'target' | null>(null);
+  const [usageSummary, setUsageSummary] = useState<any>(null);
+  const [usageRecent, setUsageRecent] = useState<any[]>([]);
+  const [usagePeriod, setUsagePeriod] = useState<'week' | 'month' | 'all'>('week');
 
   // Keep refs in sync
   useEffect(() => { isListeningRef.current = isListening; }, [isListening]);
@@ -144,7 +170,7 @@ const VoiceTranslator = () => {
   };
 
   // Translate using backend API
-  const translateText = async (text: string, target: string, source?: string): Promise<{ translation: string; detectedLang: string } | null> => {
+  const translateText = async (text: string, target: string, source?: string): Promise<{ translation: string; detectedLang: string; char_count?: number; estimated_cost_usd?: number } | null> => {
     if (!text) return null;
     setIsTranslating(true);
     setError('');
@@ -169,6 +195,8 @@ const VoiceTranslator = () => {
         return {
           translation: data.translation,
           detectedLang: data.detectedSourceLanguage || data.source || '?',
+          char_count: data.char_count ?? 0,
+          estimated_cost_usd: data.estimated_cost_usd ?? 0,
         };
       }
       throw new Error('無法取得翻譯結果');
@@ -192,7 +220,7 @@ const VoiceTranslator = () => {
       const detectedBase = result.detectedLang.split('-')[0].toLowerCase();
       const targetBase = target.split('-')[0].toLowerCase();
       if (detectedBase === targetBase && sourceLangRef.current === 'auto') {
-        // Switch target to a complementary language: Chinese↔English
+        // Switch target to a complementary language: Chinese<->English
         const isZh = detectedBase === 'zh';
         const newTarget = isZh ? 'en' : 'zh-TW';
         setTargetLang(newTarget);
@@ -205,7 +233,9 @@ const VoiceTranslator = () => {
             translation: retried.translation,
             detectedLang: retried.detectedLang,
             targetLang: newTarget,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
+            char_count: retried.char_count ?? 0,
+            estimated_cost_usd: retried.estimated_cost_usd ?? 0,
           };
           setTranslationHistory(prev => {
             const exists = prev.some(item => item.source === text && (Date.now() - item.id) < 5000);
@@ -223,7 +253,9 @@ const VoiceTranslator = () => {
         translation: result.translation,
         detectedLang: result.detectedLang,
         targetLang: target,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        char_count: result.char_count ?? 0,
+        estimated_cost_usd: result.estimated_cost_usd ?? 0,
       };
       setTranslationHistory(prev => {
         const exists = prev.some(item => item.source === text && (Date.now() - item.id) < 5000);
@@ -398,112 +430,309 @@ const VoiceTranslator = () => {
     };
   }, []);
 
+  // Fetch usage data when switching to usage view
+  const fetchUsageData = useCallback(async () => {
+    const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? '';
+    try {
+      const [summaryRes, recentRes] = await Promise.all([
+        fetch(`${BACKEND_URL}/api/usage/summary${usagePeriod !== 'all' ? `?period=${usagePeriod}` : ''}`),
+        fetch(`${BACKEND_URL}/api/usage/recent`),
+      ]);
+      if (summaryRes.ok) {
+        const summaryData = await summaryRes.json();
+        setUsageSummary(summaryData);
+      }
+      if (recentRes.ok) {
+        const recentData = await recentRes.json();
+        setUsageRecent(Array.isArray(recentData) ? recentData : recentData.records || []);
+      }
+    } catch {
+      // Silently fail - usage is informational
+    }
+  }, [usagePeriod]);
+
+  useEffect(() => {
+    if (embedView === 'usage') {
+      fetchUsageData();
+    }
+  }, [embedView, fetchUsageData]);
+
   // ── EMBED MODE UI ────────────────────────────────────────────────────────────
   if (isEmbed) {
+
+    // ── USAGE VIEW ──
+    if (embedView === 'usage') {
+      const summary = usageSummary || {};
+      const totalRequests = summary.total_requests ?? 0;
+      const totalChars = summary.total_chars ?? 0;
+      const estimatedCost = summary.estimated_cost_usd ?? 0;
+      const freeRemaining = summary.free_remaining ?? 0;
+      const freeLimit = summary.free_limit ?? 500000;
+      const freePercent = freeLimit > 0 ? Math.min(100, ((freeLimit - freeRemaining) / freeLimit) * 100) : 0;
+
+      return (
+        <div className="h-screen w-screen flex flex-col overflow-hidden" style={{ background: '#000000', color: '#ffffff', fontFamily: 'system-ui, sans-serif' }}>
+
+          {/* Top bar */}
+          <div className="flex items-center gap-3 px-5 py-4 flex-shrink-0">
+            <button
+              onClick={() => setEmbedView('translate')}
+              className="p-1.5 rounded-xl hover:bg-white/5 transition-colors"
+            >
+              <ChevronLeft className="w-5 h-5" style={{ color: '#888' }} />
+            </button>
+            <span className="text-sm tracking-widest uppercase" style={{ color: '#666' }}>用量統計</span>
+          </div>
+
+          {/* Period tabs */}
+          <div className="flex gap-2 px-5 mb-5 flex-shrink-0">
+            {([['week', '本週'], ['month', '本月'], ['all', '全部']] as const).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setUsagePeriod(key)}
+                className="px-4 py-1.5 rounded-full text-sm transition-all"
+                style={{
+                  background: usagePeriod === key ? '#a78bfa' : '#111111',
+                  color: usagePeriod === key ? '#000000' : '#888',
+                  fontWeight: usagePeriod === key ? 600 : 400,
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-5 pb-6" style={{ scrollbarWidth: 'thin', scrollbarColor: '#333 transparent' }}>
+
+            {/* Stats grid */}
+            <div className="grid grid-cols-2 gap-3 mb-6">
+              {[
+                { value: totalRequests.toLocaleString(), label: '總請求數' },
+                { value: totalChars.toLocaleString(), label: '總字元數' },
+                { value: `$${estimatedCost.toFixed(3)}`, label: '估算費用' },
+                { value: freeRemaining.toLocaleString(), label: '免費額度剩餘' },
+              ].map((card, i) => (
+                <div key={i} className="rounded-2xl p-5" style={{ background: '#111111' }}>
+                  <p className="text-2xl font-light mb-1" style={{ color: '#ffffff' }}>{card.value}</p>
+                  <p className="text-xs" style={{ color: '#666' }}>{card.label}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Free quota progress bar */}
+            <div className="rounded-2xl p-5 mb-6" style={{ background: '#111111' }}>
+              <div className="flex justify-between items-center mb-3">
+                <p className="text-xs" style={{ color: '#666' }}>免費額度使用進度</p>
+                <p className="text-xs" style={{ color: '#888' }}>{freePercent.toFixed(1)}%</p>
+              </div>
+              <div className="w-full h-2 rounded-full" style={{ background: '#222' }}>
+                <div
+                  className="h-2 rounded-full transition-all duration-500"
+                  style={{ width: `${freePercent}%`, background: 'linear-gradient(135deg, #a78bfa, #8b5cf6)' }}
+                />
+              </div>
+            </div>
+
+            {/* Recent translations */}
+            <div className="mb-2">
+              <p className="text-xs tracking-widest uppercase mb-3" style={{ color: '#666' }}>最近翻譯</p>
+              <div className="space-y-2">
+                {usageRecent.length === 0 ? (
+                  <p className="text-sm py-6 text-center" style={{ color: '#444' }}>暫無記錄</p>
+                ) : (
+                  usageRecent.map((record: any, idx: number) => (
+                    <div key={idx} className="rounded-2xl p-4" style={{ background: '#111111' }}>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-sm" style={{ color: '#aaa' }}>
+                          {langName(record.source_lang || '?')} <span style={{ color: '#555' }}>&rarr;</span> {langName(record.target_lang || '?')}
+                        </span>
+                        <span className="text-xs" style={{ color: '#444' }}>
+                          {record.timestamp ? new Date(record.timestamp).toLocaleString('zh-TW', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs" style={{ color: '#666' }}>{record.char_count ?? 0}字</span>
+                        <span className="text-xs" style={{ color: '#444' }}>~${(record.estimated_cost_usd ?? 0).toFixed(4)}</span>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ── TRANSLATE VIEW (embed) ──
+
+    // Language picker overlay
+    const langPickerOverlay = showLangPicker && (
+      <div
+        className="fixed inset-0 z-50 flex items-end justify-center"
+        style={{ background: 'rgba(0,0,0,0.7)' }}
+        onClick={() => setShowLangPicker(null)}
+      >
+        <div
+          className="w-full max-w-md rounded-t-3xl p-6 pb-8"
+          style={{ background: '#111111' }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex justify-center mb-4">
+            <div className="w-10 h-1 rounded-full" style={{ background: '#333' }} />
+          </div>
+          <p className="text-sm tracking-widest uppercase mb-5 text-center" style={{ color: '#666' }}>
+            {showLangPicker === 'source' ? '來源語言' : '目標語言'}
+          </p>
+          <div className="space-y-1 max-h-[50vh] overflow-y-auto" style={{ scrollbarWidth: 'thin', scrollbarColor: '#333 transparent' }}>
+            {showLangPicker === 'source' && (
+              <button
+                onClick={() => { setSourceLang('auto'); setShowLangPicker(null); }}
+                className="w-full text-left px-4 py-3 rounded-2xl text-lg transition-colors"
+                style={{
+                  background: sourceLang === 'auto' ? 'rgba(167,139,250,0.15)' : 'transparent',
+                  color: sourceLang === 'auto' ? '#a78bfa' : '#aaa',
+                }}
+              >
+                自動偵測
+              </button>
+            )}
+            {languages.map(lang => {
+              const isActive = showLangPicker === 'source'
+                ? sourceLang === lang.code
+                : targetLang === lang.code;
+              return (
+                <button
+                  key={lang.code}
+                  onClick={() => {
+                    if (showLangPicker === 'source') setSourceLang(lang.code);
+                    else setTargetLang(lang.code);
+                    setShowLangPicker(null);
+                  }}
+                  className="w-full text-left px-4 py-3 rounded-2xl text-lg transition-colors"
+                  style={{
+                    background: isActive ? 'rgba(167,139,250,0.15)' : 'transparent',
+                    color: isActive ? '#a78bfa' : '#aaa',
+                  }}
+                >
+                  {lang.name}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    );
+
     return (
-      <div className="h-screen w-screen flex flex-col overflow-hidden" style={{ background: '#1a1a1a', color: '#fff', fontFamily: 'system-ui, sans-serif' }}>
+      <div className="h-screen w-screen flex flex-col overflow-hidden" style={{ background: '#000000', color: '#ffffff', fontFamily: 'system-ui, sans-serif' }}>
+
+        {langPickerOverlay}
 
         {/* Top bar */}
-        <div className="flex items-center justify-between px-4 py-3 flex-shrink-0" style={{ background: '#1a1a1a' }}>
-          <button className="p-1.5 rounded-lg hover:bg-white/10 transition-colors">
-            <Settings className="w-5 h-5" style={{ color: '#aaa' }} />
-          </button>
-          <span className="font-semibold text-base tracking-wide" style={{ color: '#fff' }}>History</span>
-          <button className="p-1.5 rounded-lg hover:bg-white/10 transition-colors">
-            <LayoutGrid className="w-4 h-4" style={{ color: '#aaa' }} />
+        <div className="flex items-center justify-between px-5 py-4 flex-shrink-0">
+          <span className="text-sm tracking-widest uppercase" style={{ color: '#666' }}>翻譯</span>
+          <button
+            onClick={() => setEmbedView('usage')}
+            className="p-2 rounded-xl hover:bg-white/5 transition-colors"
+          >
+            <BarChart3 className="w-4 h-4" style={{ color: '#666' }} />
           </button>
         </div>
 
         {/* Error banner */}
         {error && (
-          <div className="mx-3 mb-2 px-3 py-2 rounded-lg flex items-start gap-2 flex-shrink-0" style={{ background: '#3a1a1a', border: '1px solid #7f3232' }}>
+          <div className="mx-5 mb-3 px-4 py-3 rounded-2xl flex items-start gap-3 flex-shrink-0" style={{ background: '#1a0a0a', border: '1px solid rgba(248,113,113,0.2)' }}>
             <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" style={{ color: '#f87171' }} />
-            <span className="text-xs" style={{ color: '#fca5a5' }}>{error}</span>
+            <span className="text-sm" style={{ color: '#fca5a5' }}>{error}</span>
           </div>
         )}
 
-        {/* Recognizing indicator */}
+        {/* Recognizing indicator - lavender purple tones */}
         {(currentSentence || interimText) && (
-          <div className="mx-3 mb-2 px-3 py-2 rounded-lg flex items-start gap-2 flex-shrink-0" style={{ background: '#2a2a1a', border: '1px solid #5a5a20' }}>
+          <div className="mx-5 mb-3 px-4 py-3 rounded-2xl flex items-start gap-3 flex-shrink-0" style={{ background: 'rgba(167,139,250,0.08)', border: '1px solid rgba(167,139,250,0.15)' }}>
             <div className="animate-pulse mt-0.5">
-              <Mic className="w-4 h-4" style={{ color: '#caca50' }} />
+              <Mic className="w-4 h-4" style={{ color: '#a78bfa' }} />
             </div>
-            <span className="text-xs" style={{ color: '#e0e080' }}>
+            <span className="text-sm" style={{ color: '#c4b5fd' }}>
               {currentSentence}
-              {interimText && <span style={{ color: '#a0a040', fontStyle: 'italic' }}> {interimText}</span>}
+              {interimText && <span style={{ color: '#7c6bbd', fontStyle: 'italic' }}> {interimText}</span>}
             </span>
           </div>
         )}
 
-        {/* Translation history — scrollable, with floating mic */}
-        <div className="flex-1 overflow-y-auto px-3 pb-2 relative" style={{ scrollbarWidth: 'thin', scrollbarColor: '#444 transparent' }}>
+        {/* Translation history -- scrollable */}
+        <div className="flex-1 overflow-y-auto px-5 pb-3" style={{ scrollbarWidth: 'thin', scrollbarColor: '#222 transparent' }}>
           {translationHistory.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full gap-3" style={{ color: '#555' }}>
-              <div className="w-16 h-16 rounded-full flex items-center justify-center" style={{ background: '#2a2a2a' }}>
-                <Mic className="w-7 h-7" style={{ color: '#4CAF50' }} />
+            <div className="flex flex-col items-center justify-center h-full gap-4">
+              <div className="w-20 h-20 rounded-full flex items-center justify-center" style={{ background: 'rgba(167,139,250,0.1)' }}>
+                <Mic className="w-8 h-8" style={{ color: '#a78bfa' }} />
               </div>
-              <p className="text-sm">Tap the mic to start translating</p>
+              <p className="text-base" style={{ color: '#444' }}>輕觸開始翻譯</p>
             </div>
           ) : (
-            <div className="space-y-3 py-2">
+            <div className="space-y-4 py-2">
               {translationHistory.map((item) => (
                 <div
                   key={item.id}
-                  className="rounded-2xl p-4"
-                  style={{ background: '#2a2a2a' }}
+                  className="rounded-3xl p-6"
+                  style={{ background: '#111111' }}
                 >
-                  {/* Source text row */}
-                  <div className="flex items-start gap-3 mb-3">
+                  {/* Source text */}
+                  <div className="flex items-start gap-3 mb-4">
                     <button
                       onClick={() => speakText(item.source, item.detectedLang)}
-                      className="flex-shrink-0 mt-0.5 w-7 h-7 flex items-center justify-center rounded-full transition-colors hover:bg-white/10"
+                      className="flex-shrink-0 mt-1 w-8 h-8 flex items-center justify-center rounded-full transition-colors hover:bg-white/5"
+                      style={{ background: 'rgba(167,139,250,0.15)' }}
                       title="Play source"
                     >
-                      {/* Green triangle play button */}
-                      <svg width="12" height="14" viewBox="0 0 12 14" fill="none">
-                        <path d="M1 1L11 7L1 13V1Z" fill="#4CAF50" />
+                      <svg width="10" height="12" viewBox="0 0 10 12" fill="none">
+                        <path d="M1 1L9 6L1 11V1Z" fill="#a78bfa" />
                       </svg>
                     </button>
                     <div className="flex-1 min-w-0">
-                      <p className="text-xs mb-1" style={{ color: '#888' }}>
+                      <p className="text-xs mb-1.5" style={{ color: '#555' }}>
                         {langName(item.detectedLang)}
-                        {sourceLang === 'auto' && <span style={{ color: '#4CAF50' }}> · auto</span>}
+                        {sourceLang === 'auto' && <span style={{ color: '#a78bfa' }}> &middot; auto</span>}
                       </p>
-                      <p className="text-sm leading-snug" style={{ color: '#bbb' }}>{item.source}</p>
+                      <p className="text-base text-gray-400 leading-relaxed">{item.source}</p>
                     </div>
                   </div>
 
                   {/* Divider */}
-                  <div className="mb-3" style={{ height: 1, background: '#3a3a3a' }} />
+                  <div className="mb-4" style={{ height: 1, background: '#1a1a1a' }} />
 
-                  {/* Translation row */}
+                  {/* Translation */}
                   <div className="flex items-start gap-3">
                     <button
                       onClick={() => speakText(item.translation, item.targetLang)}
-                      className="flex-shrink-0 mt-0.5 w-7 h-7 flex items-center justify-center rounded-full transition-colors hover:bg-white/10"
+                      className="flex-shrink-0 mt-1 w-8 h-8 flex items-center justify-center rounded-full transition-colors hover:bg-white/5"
+                      style={{ background: 'rgba(167,139,250,0.15)' }}
                       title="Play translation"
                     >
-                      <svg width="12" height="14" viewBox="0 0 12 14" fill="none">
-                        <path d="M1 1L11 7L1 13V1Z" fill="#4CAF50" />
+                      <svg width="10" height="12" viewBox="0 0 10 12" fill="none">
+                        <path d="M1 1L9 6L1 11V1Z" fill="#a78bfa" />
                       </svg>
                     </button>
                     <div className="flex-1 min-w-0">
-                      <p className="text-xs mb-1" style={{ color: '#888' }}>{langName(item.targetLang)}</p>
-                      <p className="text-base font-bold leading-snug" style={{ color: '#fff' }}>{item.translation}</p>
+                      <p className="text-xs mb-1.5" style={{ color: '#555' }}>{langName(item.targetLang)}</p>
+                      <p className="text-2xl font-light leading-snug" style={{ color: '#ffffff' }}>{item.translation}</p>
                     </div>
-                    {/* Share + Bookmark icons bottom-right */}
-                    <div className="flex flex-col gap-1.5 flex-shrink-0 self-end">
-                      <button
-                        onClick={() => { navigator.clipboard.writeText(item.translation); setCopiedItem({ id: item.id, type: 'translation' }); setTimeout(() => setCopiedItem(null), 2000); }}
-                        className="p-1 rounded hover:bg-white/10 transition-colors"
-                        title="Copy"
-                      >
-                        <Share2 className="w-3.5 h-3.5" style={{ color: copiedItem?.id === item.id && copiedItem?.type === 'translation' ? '#4CAF50' : '#666' }} />
-                      </button>
-                      <button className="p-1 rounded hover:bg-white/10 transition-colors" title="Bookmark">
-                        <BookmarkPlus className="w-3.5 h-3.5" style={{ color: '#666' }} />
-                      </button>
-                    </div>
+                    {/* Copy button */}
+                    <button
+                      onClick={() => { navigator.clipboard.writeText(item.translation); setCopiedItem({ id: item.id, type: 'translation' }); setTimeout(() => setCopiedItem(null), 2000); }}
+                      className="flex-shrink-0 self-end p-1.5 rounded-lg hover:bg-white/5 transition-colors"
+                      title="Copy"
+                    >
+                      <Copy className="w-3.5 h-3.5" style={{ color: copiedItem?.id === item.id && copiedItem?.type === 'translation' ? '#a78bfa' : '#333' }} />
+                    </button>
+                  </div>
+
+                  {/* Cost info */}
+                  <div className="flex justify-end mt-3">
+                    <span className="text-xs" style={{ color: '#333' }}>
+                      ~${(item.estimated_cost_usd ?? 0).toFixed(3)} &middot; {item.char_count ?? 0}字
+                    </span>
                   </div>
                 </div>
               ))}
@@ -511,17 +740,19 @@ const VoiceTranslator = () => {
           )}
         </div>
 
-        {/* Floating mic button — sits between history and bottom bar */}
-        <div className="flex justify-center flex-shrink-0 -mb-6 z-10 relative">
+        {/* Mic button - centered floating */}
+        <div className="flex justify-center flex-shrink-0 py-3 z-10 relative">
           <button
             onClick={toggleListening}
             disabled={!isSupported}
-            className="w-14 h-14 rounded-full flex items-center justify-center shadow-lg transition-all focus:outline-none"
+            className="w-16 h-16 rounded-full flex items-center justify-center shadow-lg transition-all focus:outline-none relative"
             style={{
-              background: isListening ? '#e53935' : '#4CAF50',
+              background: isListening
+                ? 'linear-gradient(135deg, #ef4444, #dc2626)'
+                : 'linear-gradient(135deg, #a78bfa, #8b5cf6)',
               boxShadow: isListening
-                ? '0 0 0 0 rgba(229,57,53,0.4)'
-                : '0 4px 24px rgba(76,175,80,0.4)',
+                ? '0 4px 30px rgba(239,68,68,0.3)'
+                : '0 4px 30px rgba(167,139,250,0.3)',
             }}
             title={isListening ? 'Stop' : 'Start recording'}
           >
@@ -530,22 +761,22 @@ const VoiceTranslator = () => {
             ) : (
               <Mic className="w-6 h-6 text-white" />
             )}
-            {/* Pulse ring when listening */}
+            {/* Soft pulse ring when listening */}
             {isListening && (
               <span
-                className="absolute w-14 h-14 rounded-full animate-ping"
-                style={{ background: 'rgba(229,57,53,0.25)', pointerEvents: 'none' }}
+                className="absolute w-16 h-16 rounded-full soft-pulse"
+                style={{ background: 'rgba(239,68,68,0.3)', pointerEvents: 'none' }}
               />
             )}
           </button>
         </div>
 
-        {/* Bottom fixed bar */}
-        <div className="flex-shrink-0 pt-8 pb-3 px-3" style={{ background: '#1a1a1a' }}>
+        {/* Bottom bar */}
+        <div className="flex-shrink-0 pb-4 px-5 pt-1" style={{ background: '#000000' }}>
           {/* Text input */}
           <div
-            className="flex items-center gap-2 rounded-2xl px-4 py-3 mb-3"
-            style={{ background: '#2a2a2a' }}
+            className="flex items-center gap-2 rounded-full px-5 py-3.5 mb-4"
+            style={{ background: '#1a1a1a' }}
           >
             <input
               type="text"
@@ -557,43 +788,31 @@ const VoiceTranslator = () => {
                   setSourceText('');
                 }
               }}
-              placeholder="Enter text to translate"
-              className="flex-1 bg-transparent text-sm outline-none"
-              style={{ color: '#fff', caretColor: '#4CAF50' }}
+              placeholder="輸入文字翻譯..."
+              className="flex-1 bg-transparent text-base outline-none"
+              style={{ color: '#ffffff', caretColor: '#a78bfa' }}
             />
             {sourceText.trim() && (
               <button
                 onClick={() => { translateAndAddToHistory(sourceText.trim(), targetLang, sourceLang); setSourceText(''); }}
-                className="flex-shrink-0 px-3 py-1 rounded-xl text-xs font-semibold transition-colors"
-                style={{ background: '#4CAF50', color: '#fff' }}
+                className="flex-shrink-0 px-4 py-1.5 rounded-full text-sm font-medium transition-colors"
+                style={{ background: 'linear-gradient(135deg, #a78bfa, #8b5cf6)', color: '#fff' }}
               >
                 Go
               </button>
             )}
           </div>
 
-          {/* Language selector row */}
-          <div className="flex items-center gap-2">
-            {/* Source lang */}
-            <div className="flex-1">
-              <select
-                value={sourceLang}
-                onChange={(e) => setSourceLang(e.target.value)}
-                className="w-full appearance-none text-center text-xs font-medium rounded-xl px-2 py-2.5 outline-none transition-colors"
-                style={{ background: '#2a2a2a', color: '#fff', border: '1px solid #3a3a3a' }}
-              >
-                <option value="auto">🔍 Auto ({getBrowserLangName()})</option>
-                {languages.map(lang => (
-                  <option key={lang.code} value={lang.code}>{lang.name}</option>
-                ))}
-              </select>
-              {sourceLang !== 'auto' && (
-                <p className="text-center text-xs mt-0.5" style={{ color: '#666' }}>{langRegion(sourceLang)}</p>
-              )}
-              {sourceLang === 'auto' && detectedLang && (
-                <p className="text-center text-xs mt-0.5" style={{ color: '#4CAF50' }}>{langName(detectedLang)}</p>
-              )}
-            </div>
+          {/* Language selector row - text buttons */}
+          <div className="flex items-center justify-center gap-3">
+            {/* Source lang button */}
+            <button
+              onClick={() => setShowLangPicker('source')}
+              className="text-lg transition-colors hover:opacity-80"
+              style={{ color: '#888' }}
+            >
+              {sourceLang === 'auto' ? `自動${detectedLang ? ` (${langName(detectedLang)})` : ''}` : langName(sourceLang)}
+            </button>
 
             {/* Swap button */}
             <button
@@ -606,26 +825,20 @@ const VoiceTranslator = () => {
               }}
               disabled={sourceLang === 'auto'}
               className="flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-full transition-colors"
-              style={{ background: '#2a2a2a', color: sourceLang === 'auto' ? '#444' : '#4CAF50' }}
+              style={{ color: sourceLang === 'auto' ? '#333' : '#a78bfa' }}
               title={sourceLang === 'auto' ? 'Cannot swap in auto-detect mode' : 'Swap languages'}
             >
               <ArrowRightLeft className="w-4 h-4" />
             </button>
 
-            {/* Target lang */}
-            <div className="flex-1">
-              <select
-                value={targetLang}
-                onChange={(e) => setTargetLang(e.target.value)}
-                className="w-full appearance-none text-center text-xs font-medium rounded-xl px-2 py-2.5 outline-none transition-colors"
-                style={{ background: '#2a2a2a', color: '#fff', border: '1px solid #3a3a3a' }}
-              >
-                {languages.map(lang => (
-                  <option key={lang.code} value={lang.code}>{lang.name}</option>
-                ))}
-              </select>
-              <p className="text-center text-xs mt-0.5" style={{ color: '#666' }}>{langRegion(targetLang)}</p>
-            </div>
+            {/* Target lang button */}
+            <button
+              onClick={() => setShowLangPicker('target')}
+              className="text-lg transition-colors hover:opacity-80"
+              style={{ color: '#ffffff' }}
+            >
+              {langName(targetLang)}
+            </button>
           </div>
         </div>
       </div>
