@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI 語音翻譯 - 嵌入測試</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f5f5f5;
+      padding: 20px;
+    }
+    h1 { text-align: center; margin-bottom: 10px; color: #333; }
+    p.desc { text-align: center; color: #666; margin-bottom: 30px; font-size: 14px; }
+    
+    .demo-section {
+      max-width: 800px;
+      margin: 0 auto 40px;
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.1);
+    }
+    .demo-section h2 { margin-bottom: 16px; color: #444; font-size: 18px; }
+    .demo-section p { margin-bottom: 12px; color: #666; font-size: 14px; }
+    
+    .iframe-container {
+      width: 100%;
+      max-width: 420px;
+      height: 700px;
+      margin: 0 auto;
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+    }
+    .iframe-container iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
+    }
+
+    /* Code block */
+    .code-block {
+      background: #1e1e1e;
+      color: #d4d4d4;
+      padding: 16px;
+      border-radius: 8px;
+      font-family: 'Fira Code', monospace;
+      font-size: 13px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+      margin-top: 12px;
+      position: relative;
+    }
+    .copy-btn {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      background: #4CAF50;
+      color: white;
+      border: none;
+      padding: 4px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .copy-btn:hover { background: #45a049; }
+
+    /* Translation result log */
+    #result-log {
+      background: #f9f9f9;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 12px;
+      margin-top: 16px;
+      max-height: 200px;
+      overflow-y: auto;
+      font-size: 13px;
+      color: #555;
+    }
+    #result-log .entry { padding: 4px 0; border-bottom: 1px solid #eee; }
+    #result-log .entry:last-child { border-bottom: none; }
+  </style>
+</head>
+<body>
+
+  <h1>🌐 AI 語音翻譯外掛 - 嵌入測試</h1>
+  <p class="desc">以下展示如何將翻譯工具嵌入到您的網站中</p>
+
+  <!-- Demo 1: Embedded iframe -->
+  <div class="demo-section">
+    <h2>📱 嵌入效果預覽</h2>
+    <p>這是嵌入到客戶網站時的樣子（embed 模式 + 深色主題）</p>
+    <div class="iframe-container">
+      <iframe 
+        id="translator-iframe"
+        src="/?mode=embed" 
+        allow="microphone; clipboard-write"
+        title="AI 語音翻譯"
+      ></iframe>
+    </div>
+  </div>
+
+  <!-- Demo 2: postMessage API -->
+  <div class="demo-section">
+    <h2>📡 postMessage API 接收翻譯結果</h2>
+    <p>iframe 翻譯完成時會透過 postMessage 傳送結果到父頁面：</p>
+    <div id="result-log">
+      <div class="entry" style="color:#999;">等待翻譯結果...</div>
+    </div>
+  </div>
+
+  <!-- Demo 3: Embed code -->
+  <div class="demo-section">
+    <h2>📋 嵌入代碼</h2>
+    <p>將以下代碼貼到您的網站 HTML 中即可使用：</p>
+    <div class="code-block" id="embed-code">
+      <button class="copy-btn" onclick="copyCode()">複製</button>&lt;!-- AI 語音翻譯外掛 --&gt;
+&lt;div style="width:100%;max-width:420px;height:700px;margin:0 auto;border-radius:16px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.15);"&gt;
+  &lt;iframe
+    src="YOUR_DEPLOY_URL/?mode=embed"
+    style="width:100%;height:100%;border:none;"
+    allow="microphone; clipboard-write"
+    title="AI 語音翻譯"
+  &gt;&lt;/iframe&gt;
+&lt;/div&gt;
+
+&lt;!-- 接收翻譯結果（可選） --&gt;
+&lt;script&gt;
+  window.addEventListener('message', function(e) {
+    if (e.data &amp;&amp; e.data.type === 'TRANSLATION_RESULT') {
+      console.log('翻譯結果:', e.data.payload);
+      // e.data.payload = { source, translation, detectedLang, targetLang }
+    }
+  });
+&lt;/script&gt;</div>
+  </div>
+
+  <!-- Demo 4: Control API -->
+  <div class="demo-section">
+    <h2>🎮 控制 API（可選）</h2>
+    <p>從父頁面控制 iframe 的目標語言：</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
+      <button onclick="setLang('en')" style="padding:8px 16px;border-radius:6px;border:1px solid #ddd;cursor:pointer;">設為 English</button>
+      <button onclick="setLang('ja')" style="padding:8px 16px;border-radius:6px;border:1px solid #ddd;cursor:pointer;">設為 日本語</button>
+      <button onclick="setLang('zh-TW')" style="padding:8px 16px;border-radius:6px;border:1px solid #ddd;cursor:pointer;">設為 繁體中文</button>
+      <button onclick="setLang('ko')" style="padding:8px 16px;border-radius:6px;border:1px solid #ddd;cursor:pointer;">設為 한국어</button>
+    </div>
+    <div class="code-block">// 設定目標語言
+const iframe = document.getElementById('translator-iframe');
+iframe.contentWindow.postMessage({
+  type: 'SET_TARGET_LANG',
+  payload: { lang: 'ja' }
+}, '*');</div>
+  </div>
+
+  <script>
+    // Listen for translation results from iframe
+    const log = document.getElementById('result-log');
+    let firstResult = true;
+
+    window.addEventListener('message', function(e) {
+      if (e.data && e.data.type === 'TRANSLATION_RESULT') {
+        if (firstResult) {
+          log.innerHTML = '';
+          firstResult = false;
+        }
+        const p = e.data.payload;
+        const entry = document.createElement('div');
+        entry.className = 'entry';
+        entry.innerHTML = `<strong>${p.detectedLang}</strong> → <strong>${p.targetLang}</strong>: ${p.source} → ${p.translation}`;
+        log.insertBefore(entry, log.firstChild);
+      }
+    });
+
+    // Control API
+    function setLang(lang) {
+      const iframe = document.getElementById('translator-iframe');
+      iframe.contentWindow.postMessage({
+        type: 'SET_TARGET_LANG',
+        payload: { lang }
+      }, '*');
+    }
+
+    // Copy embed code
+    function copyCode() {
+      const code = document.getElementById('embed-code').innerText.replace('複製', '').trim();
+      navigator.clipboard.writeText(code);
+      const btn = document.querySelector('.copy-btn');
+      btn.textContent = '已複製！';
+      setTimeout(() => btn.textContent = '複製', 2000);
+    }
+  </script>
+
+</body>
+</html>

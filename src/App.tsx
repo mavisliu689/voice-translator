@@ -22,6 +22,21 @@ const languages = [
 const langName = (code: string) => languages.find(l => l.code === code)?.name || code;
 const langRegion = (code: string) => languages.find(l => l.code === code)?.region || code;
 
+// Resolve browser language to our closest supported language code
+const getBrowserLangCode = (): string => {
+  const nav = navigator.language || 'en';
+  // Exact match first (e.g. zh-TW, zh-CN)
+  const exact = languages.find(l => l.code.toLowerCase() === nav.toLowerCase());
+  if (exact) return exact.code;
+  // Prefix match (e.g. "en-GB" → "en", "ja" → "ja")
+  const prefix = nav.split('-')[0].toLowerCase();
+  const partial = languages.find(l => l.code.toLowerCase() === prefix || l.code.toLowerCase().startsWith(prefix + '-'));
+  return partial?.code || 'en';
+};
+
+// Get a display name for the browser language
+const getBrowserLangName = (): string => langName(getBrowserLangCode());
+
 // Speech recognition language hint mapping
 const speechLangMap: Record<string, string> = {
   'zh-TW': 'zh-TW', 'zh-CN': 'zh-CN', 'en': 'en-US', 'ja': 'ja-JP',
@@ -135,7 +150,7 @@ const VoiceTranslator = () => {
     setError('');
 
     try {
-      const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001';
+      const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? '';
       const body: Record<string, string> = { text, target };
       if (source && source !== 'auto') body.source = source;
       const response = await fetch(`${BACKEND_URL}/api/translate`, {
@@ -172,6 +187,36 @@ const VoiceTranslator = () => {
     const result = await translateText(text, target, source);
     if (result) {
       setDetectedLang(result.detectedLang);
+
+      // Auto-switch target language if detected source matches current target
+      const detectedBase = result.detectedLang.split('-')[0].toLowerCase();
+      const targetBase = target.split('-')[0].toLowerCase();
+      if (detectedBase === targetBase && sourceLangRef.current === 'auto') {
+        // Switch target to a complementary language: Chinese↔English
+        const isZh = detectedBase === 'zh';
+        const newTarget = isZh ? 'en' : 'zh-TW';
+        setTargetLang(newTarget);
+        // Re-translate with new target
+        const retried = await translateText(text, newTarget, source);
+        if (retried) {
+          const newItem = {
+            id: Date.now(),
+            source: text,
+            translation: retried.translation,
+            detectedLang: retried.detectedLang,
+            targetLang: newTarget,
+            timestamp: new Date().toISOString()
+          };
+          setTranslationHistory(prev => {
+            const exists = prev.some(item => item.source === text && (Date.now() - item.id) < 5000);
+            if (exists) return prev;
+            return [newItem, ...prev].slice(0, 20);
+          });
+          postTranslationResult(newItem);
+        }
+        return;
+      }
+
       const newItem = {
         id: Date.now(),
         source: text,
@@ -217,7 +262,9 @@ const VoiceTranslator = () => {
       const recognition = new SpeechRecognition();
       recognition.continuous = true;
       recognition.interimResults = true;
-      recognition.lang = sourceLang !== 'auto' ? (speechLangMap[sourceLang] || sourceLang) : '';
+      // When auto-detect, use browser language as speech recognition hint (empty string falls back to OS default which is unreliable)
+      const effectiveLang = sourceLang !== 'auto' ? sourceLang : getBrowserLangCode();
+      recognition.lang = speechLangMap[effectiveLang] || effectiveLang;
       recognition.maxAlternatives = 1;
       recognitionRef.current = recognition;
 
@@ -535,7 +582,7 @@ const VoiceTranslator = () => {
                 className="w-full appearance-none text-center text-xs font-medium rounded-xl px-2 py-2.5 outline-none transition-colors"
                 style={{ background: '#2a2a2a', color: '#fff', border: '1px solid #3a3a3a' }}
               >
-                <option value="auto">Auto detect</option>
+                <option value="auto">🔍 Auto ({getBrowserLangName()})</option>
                 {languages.map(lang => (
                   <option key={lang.code} value={lang.code}>{lang.name}</option>
                 ))}
@@ -616,13 +663,16 @@ const VoiceTranslator = () => {
                 onChange={(e) => setSourceLang(e.target.value)}
                 className="px-2 sm:px-4 py-1.5 sm:py-2 text-sm sm:text-base border-2 border-gray-200 rounded-lg focus:outline-none focus:border-blue-500 transition-colors"
               >
-                <option value="auto">🔍 自動偵測</option>
+                <option value="auto">🔍 自動偵測 ({getBrowserLangName()})</option>
                 {languages.map(lang => (
                   <option key={lang.code} value={lang.code}>{lang.name}</option>
                 ))}
               </select>
               {sourceLang === 'auto' && detectedLang && (
                 <span className="text-xs text-green-600 font-medium">偵測到: {langName(detectedLang)}</span>
+              )}
+              {sourceLang === 'auto' && !detectedLang && (
+                <span className="text-xs text-gray-400">語音識別使用{getBrowserLangName()}，翻譯時自動偵測</span>
               )}
             </div>
 
