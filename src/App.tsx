@@ -20,8 +20,6 @@ const languages = [
 
 // Language name lookup
 const langName = (code: string) => languages.find(l => l.code === code)?.name || code;
-const langRegion = (code: string) => languages.find(l => l.code === code)?.region || code;
-
 // Resolve browser language to our closest supported language code
 const getBrowserLangCode = (): string => {
   const nav = navigator.language || 'en';

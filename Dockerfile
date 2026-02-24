@@ -20,12 +20,12 @@ COPY server/ ./server/
 # Copy built frontend
 COPY --from=frontend-builder /app/dist ./dist
 
-EXPOSE 3001
+EXPOSE 5876
 
 ENV NODE_ENV=production
-ENV PORT=3001
+ENV PORT=5876
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3001/health || exit 1
+  CMD wget --no-verbose --tries=1 --spider http://localhost:5876/health || exit 1
 
 CMD ["node", "server/index.js"]
