@@ -869,11 +869,11 @@ const VoiceTranslator = () => {
 
   // ── NORMAL MODE UI (unchanged) ────────────────────────────────────────────────
   return (
-    <div className="h-screen w-screen bg-gradient-to-br from-blue-50 to-purple-50 flex flex-col overflow-hidden">
+    <div className="h-screen w-screen flex flex-col overflow-hidden" style={{ background: '#faf9f6' }}>
       <div className="flex-1 flex flex-col h-full overflow-auto">
-        <div className="bg-white flex-1 flex flex-col p-3 sm:p-4 md:p-6 lg:p-8">
+        <div className="flex-1 flex flex-col p-3 sm:p-4 md:p-6 lg:p-8" style={{ background: '#faf9f6' }}>
           {/* Title */}
-          <h1 className="text-xl sm:text-2xl md:text-3xl font-bold text-center mb-4 sm:mb-6 md:mb-8 bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
+          <h1 className="text-xl sm:text-2xl md:text-3xl font-bold text-center mb-4 sm:mb-6 md:mb-8" style={{ color: '#c8956c' }}>
             AI 即時語音翻譯工具
           </h1>
 
@@ -896,7 +896,8 @@ const VoiceTranslator = () => {
               <select
                 value={sourceLang}
                 onChange={(e) => setSourceLang(e.target.value)}
-                className="px-2 sm:px-4 py-1.5 sm:py-2 text-sm sm:text-base border-2 border-gray-200 rounded-lg focus:outline-none focus:border-blue-500 transition-colors"
+                className="px-2 sm:px-4 py-1.5 sm:py-2 text-sm sm:text-base border-2 rounded-lg focus:outline-none transition-colors"
+                style={{ borderColor: '#e8e4df', focusBorderColor: '#c8956c' }}
               >
                 <option value="auto">🔍 自動偵測 ({getBrowserLangName()})</option>
                 {languages.map(lang => (
@@ -929,7 +930,8 @@ const VoiceTranslator = () => {
             <select
               value={targetLang}
               onChange={(e) => setTargetLang(e.target.value)}
-              className="px-2 sm:px-4 py-1.5 sm:py-2 text-sm sm:text-base border-2 border-gray-200 rounded-lg focus:outline-none focus:border-blue-500 transition-colors"
+              className="px-2 sm:px-4 py-1.5 sm:py-2 text-sm sm:text-base border-2 rounded-lg focus:outline-none transition-colors"
+              style={{ borderColor: '#e8e4df' }}
             >
               {languages.map(lang => (
                 <option key={lang.code} value={lang.code}>{lang.name}</option>
@@ -972,7 +974,7 @@ const VoiceTranslator = () => {
               )}
             </div>
 
-            <div className="flex-1 overflow-y-auto space-y-2 p-2 bg-gray-50 rounded-lg border border-gray-200">
+            <div className="flex-1 overflow-y-auto space-y-2 p-2 rounded-lg border" style={{ background: '#ffffff', borderColor: '#e8e4df' }}>
               {translationHistory.length === 0 ? (
                 <div className="text-center py-8 text-gray-400">
                   <p className="text-sm">還沒有翻譯記錄</p>
@@ -1022,7 +1024,7 @@ const VoiceTranslator = () => {
           </div>
 
           {/* Manual input */}
-          <div className="mb-3 p-3 bg-white rounded-lg border border-gray-200">
+          <div className="mb-3 p-3 rounded-lg border" style={{ background: '#ffffff', borderColor: '#e8e4df' }}>
             <label className="text-xs font-medium text-gray-700 mb-2 block">手動輸入{sourceLang === 'auto' ? '（自動偵測語言）' : `（${langName(sourceLang)}）`}</label>
             <div className="flex gap-2">
               <input
@@ -1036,12 +1038,16 @@ const VoiceTranslator = () => {
                   }
                 }}
                 placeholder="輸入任何語言的文字，按 Enter 翻譯..."
-                className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:border-blue-500"
+                className="flex-1 px-3 py-2 text-sm border rounded-lg focus:outline-none"
+                style={{ borderColor: '#e8e4df' }}
               />
               <button
                 onClick={() => { if (sourceText.trim()) { translateAndAddToHistory(sourceText.trim(), targetLang, sourceLang); setSourceText(''); } }}
                 disabled={!sourceText.trim()}
-                className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:bg-gray-300 disabled:cursor-not-allowed text-sm"
+                className="px-4 py-2 text-white rounded-lg disabled:bg-gray-300 disabled:cursor-not-allowed text-sm transition-colors"
+                style={{ background: '#c8956c' }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = '#b8855c')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = '#c8956c')}
               >
                 翻譯
               </button>
@@ -1055,9 +1061,10 @@ const VoiceTranslator = () => {
               disabled={!isSupported}
               className={`flex items-center gap-1 sm:gap-2 px-4 sm:px-6 py-2 sm:py-3 text-sm sm:text-base rounded-lg font-medium transition-all ${
                 isListening ? 'bg-red-500 hover:bg-red-600 text-white'
-                  : isSupported ? 'bg-blue-500 hover:bg-blue-600 text-white'
+                  : isSupported ? 'text-white'
                     : 'bg-gray-300 text-gray-500 cursor-not-allowed'
               }`}
+              style={!isListening && isSupported ? { background: '#c8956c' } : undefined}
             >
               {isListening ? <><MicOff className="w-5 h-5" /> 停止錄音</> : <><Mic className="w-5 h-5" /> 開始語音輸入</>}
             </button>
@@ -1083,9 +1090,9 @@ const VoiceTranslator = () => {
 
           {/* Instructions */}
           <div className="mt-auto pt-4">
-            <div className="p-3 bg-blue-50 rounded-lg">
-              <p className="text-xs sm:text-sm text-blue-800 font-semibold mb-1">使用說明：</p>
-              <ul className="text-xs sm:text-sm text-blue-700 space-y-0.5">
+            <div className="p-3 rounded-lg" style={{ background: 'rgba(200,149,108,0.08)' }}>
+              <p className="text-xs sm:text-sm font-semibold mb-1" style={{ color: '#2d2d2d' }}>使用說明：</p>
+              <ul className="text-xs sm:text-sm space-y-0.5" style={{ color: '#888888' }}>
                 <li>• 語言自動偵測，您只需選擇翻譯目標語言</li>
                 <li>• 點擊麥克風按鈕開始語音輸入（首次需允許麥克風權限）</li>
                 <li>• 也可以直接在文字框輸入或貼上任何語言的文字</li>
