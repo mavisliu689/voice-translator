@@ -897,7 +897,7 @@ const VoiceTranslator = () => {
                 value={sourceLang}
                 onChange={(e) => setSourceLang(e.target.value)}
                 className="px-2 sm:px-4 py-1.5 sm:py-2 text-sm sm:text-base border-2 rounded-lg focus:outline-none transition-colors"
-                style={{ borderColor: '#e8e4df', focusBorderColor: '#c8956c' }}
+                style={{ borderColor: '#e8e4df' }}
               >
                 <option value="auto">🔍 自動偵測 ({getBrowserLangName()})</option>
                 {languages.map(lang => (
