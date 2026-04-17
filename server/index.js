@@ -45,8 +45,17 @@ const PORT = process.env.PORT || 3001;
 
 // Security middleware
 app.use(helmet({
-  contentSecurityPolicy: false, // Allow inline scripts for embedded mode
+  contentSecurityPolicy: {
+    directives: {
+      ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+      'frame-ancestors': ["'self'", 'https://www.tissa.tw', 'https://tissa.tw'],
+      // Remove default script-src/style-src restrictions for embedded mode
+      'script-src': null,
+      'style-src': null,
+    },
+  },
   crossOriginEmbedderPolicy: false,
+  frameguard: false, // Disable X-Frame-Options — using CSP frame-ancestors instead
 }));
 
 // CORS - allow all origins by default for iframe embedding
