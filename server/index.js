@@ -48,7 +48,7 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       ...helmet.contentSecurityPolicy.getDefaultDirectives(),
-      'frame-ancestors': ["'self'", 'https://www.tissa.tw', 'https://tissa.tw'],
+      'frame-ancestors': ["'self'", 'https://www.tissa.tw', 'https://tissa.tw', 'https://www.cisanet.org.tw', 'https://cisanet.org.tw'],
       // Remove default script-src/style-src restrictions for embedded mode
       'script-src': null,
       'style-src': null,
