@@ -7,7 +7,7 @@
 import { describe, it, expect } from 'vitest';
 
 const SUPPORTED_LANGS = new Set([
-  'zh-TW', 'zh-CN', 'en', 'ja', 'ko', 'es', 'fr', 'de',
+  'zh-TW', 'en', 'ja', 'ko', 'es', 'fr', 'de',
   'pt', 'ru', 'ar', 'hi', 'th', 'vi', 'id', 'it',
 ]);
 

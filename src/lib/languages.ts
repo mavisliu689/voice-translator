@@ -1,7 +1,6 @@
 // Supported languages — keep in sync with server SUPPORTED_LANGS / /api/languages.
 export const languages = [
   { code: 'zh-TW', name: '繁體中文', region: 'Taiwan' },
-  { code: 'zh-CN', name: '简体中文', region: 'China' },
   { code: 'en', name: 'English', region: 'US' },
   { code: 'ja', name: 'Japanese', region: 'Japan' },
   { code: 'ko', name: 'Korean', region: 'Korea' },
@@ -36,7 +35,6 @@ export const getBrowserLangName = (): string => langName(getBrowserLangCode());
 // Speech recognition language hint mapping (BCP-47).
 export const speechLangMap: Record<string, string> = {
   'zh-TW': 'zh-TW',
-  'zh-CN': 'zh-CN',
   en: 'en-US',
   ja: 'ja-JP',
   ko: 'ko-KR',

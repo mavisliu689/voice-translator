@@ -71,7 +71,7 @@ const BCRYPT_ROUNDS = 12;
 
 // Supported language codes — keep in sync with /api/languages and frontend `languages`
 const SUPPORTED_LANGS = new Set([
-  'zh-TW', 'zh-CN', 'en', 'ja', 'ko', 'es', 'fr', 'de',
+  'zh-TW', 'en', 'ja', 'ko', 'es', 'fr', 'de',
   'pt', 'ru', 'ar', 'hi', 'th', 'vi', 'id', 'it',
 ]);
 
@@ -300,7 +300,6 @@ app.get('/api/languages', (req, res) => {
   res.json({
     languages: [
       { code: 'zh-TW', name: '繁體中文' },
-      { code: 'zh-CN', name: '简体中文' },
       { code: 'en', name: 'English' },
       { code: 'ja', name: '日本語' },
       { code: 'ko', name: '한국어' },
