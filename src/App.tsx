@@ -1,68 +1,37 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Mic, MicOff, Volume2, ArrowRightLeft, Copy, AlertCircle, Shield, BarChart3, ChevronLeft } from 'lucide-react';
+import { Mic, MicOff, Volume2, ArrowRightLeft, Copy, AlertCircle, Shield, BarChart3, ChevronLeft, LogOut, UserPlus, Trash2, Users } from 'lucide-react';
+import {
+  languages,
+  langName,
+  getBrowserLangCode,
+  getBrowserLangName,
+  speechLangMap,
+} from './lib/languages';
+import {
+  AUTH_TOKEN_KEY,
+  AUTH_USERNAME_KEY,
+  translate,
+  login as apiLogin,
+  makeAuthedFetch,
+  fetchUsageSummary,
+  fetchUsageRecent,
+  fetchAdmins as apiFetchAdmins,
+  createAdmin,
+  deleteAdmin,
+} from './lib/api';
+import {
+  useIsEmbed,
+  useLockBodyScroll,
+  useParentMessages,
+  postTranslationResultToParent,
+  injectPulseStyleOnce,
+} from './hooks/useEmbedMode';
+import type { TranslationHistoryItem, Admin, UsageSummary, UsageRecord } from './types';
 
-const languages = [
-  { code: 'zh-TW', name: '繁體中文', region: 'Taiwan' },
-  { code: 'zh-CN', name: '简体中文', region: 'China' },
-  { code: 'en', name: 'English', region: 'US' },
-  { code: 'ja', name: 'Japanese', region: 'Japan' },
-  { code: 'ko', name: 'Korean', region: 'Korea' },
-  { code: 'es', name: 'Spanish', region: 'Spain' },
-  { code: 'fr', name: 'French', region: 'France' },
-  { code: 'de', name: 'German', region: 'Germany' },
-  { code: 'pt', name: 'Portuguese', region: 'Brazil' },
-  { code: 'ru', name: 'Russian', region: 'Russia' },
-  { code: 'th', name: 'Thai', region: 'Thailand' },
-  { code: 'vi', name: 'Vietnamese', region: 'Vietnam' },
-  { code: 'id', name: 'Indonesian', region: 'Indonesia' },
-  { code: 'it', name: 'Italian', region: 'Italy' },
-];
-
-// Language name lookup
-const langName = (code: string) => languages.find(l => l.code === code)?.name || code;
-// Resolve browser language to our closest supported language code
-const getBrowserLangCode = (): string => {
-  const nav = navigator.language || 'en';
-  // Exact match first (e.g. zh-TW, zh-CN)
-  const exact = languages.find(l => l.code.toLowerCase() === nav.toLowerCase());
-  if (exact) return exact.code;
-  // Prefix match (e.g. "en-GB" → "en", "ja" → "ja")
-  const prefix = nav.split('-')[0].toLowerCase();
-  const partial = languages.find(l => l.code.toLowerCase() === prefix || l.code.toLowerCase().startsWith(prefix + '-'));
-  return partial?.code || 'en';
-};
-
-// Get a display name for the browser language
-const getBrowserLangName = (): string => langName(getBrowserLangCode());
-
-// Speech recognition language hint mapping
-const speechLangMap: Record<string, string> = {
-  'zh-TW': 'zh-TW', 'zh-CN': 'zh-CN', 'en': 'en-US', 'ja': 'ja-JP',
-  'ko': 'ko-KR', 'es': 'es-ES', 'fr': 'fr-FR', 'de': 'de-DE',
-  'pt': 'pt-BR', 'ru': 'ru-RU', 'th': 'th-TH', 'vi': 'vi-VN',
-  'id': 'id-ID', 'it': 'it-IT',
-};
-
-// Pulse keyframes injected once
-const pulseStyleId = 'embed-pulse-style';
-if (typeof document !== 'undefined' && !document.getElementById(pulseStyleId)) {
-  const style = document.createElement('style');
-  style.id = pulseStyleId;
-  style.textContent = `
-    @keyframes softPulse {
-      0%, 100% { transform: scale(1); opacity: 0.5; }
-      50% { transform: scale(1.35); opacity: 0; }
-    }
-    .soft-pulse {
-      animation: softPulse 2s ease-in-out infinite;
-    }
-  `;
-  document.head.appendChild(style);
-}
+injectPulseStyleOnce();
 
 const VoiceTranslator = () => {
-  // Check embed mode from URL
-  const isEmbed = new URLSearchParams(window.location.search).get('mode') === 'embed';
+  const isEmbed = useIsEmbed();
 
   const [isListening, setIsListening] = useState(false);
   const [sourceText, setSourceText] = useState('');
@@ -75,22 +44,13 @@ const VoiceTranslator = () => {
   const [micPermission, setMicPermission] = useState('prompt');
   const [detectedLang, setDetectedLang] = useState<string | null>(null);
 
-  const [translationHistory, setTranslationHistory] = useState<Array<{
-    id: number;
-    source: string;
-    translation: string;
-    detectedLang: string;
-    targetLang: string;
-    timestamp: string;
-    char_count?: number;
-    estimated_cost_usd?: number;
-  }>>([]);
+  const [translationHistory, setTranslationHistory] = useState<TranslationHistoryItem[]>([]);
   const [currentSentence, setCurrentSentence] = useState('');
 
-  const recognitionRef = useRef<any>(null);
+  const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
   const [isSupported, setIsSupported] = useState(false);
-  const restartTimeoutRef = useRef<any>(null);
-  const sentenceTimeoutRef = useRef<any>(null);
+  const restartTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sentenceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isListeningRef = useRef(false);
   const targetLangRef = useRef(targetLang);
   const sourceLangRef = useRef(sourceLang);
@@ -98,62 +58,35 @@ const VoiceTranslator = () => {
   // Embed-specific state
   const [embedView, setEmbedView] = useState<'translate' | 'usage'>('translate');
   const [showLangPicker, setShowLangPicker] = useState<'source' | 'target' | null>(null);
-  const [usageSummary, setUsageSummary] = useState<any>(null);
-  const [usageRecent, setUsageRecent] = useState<any[]>([]);
+  const [usageSummary, setUsageSummary] = useState<UsageSummary | null>(null);
+  const [usageRecent, setUsageRecent] = useState<UsageRecord[]>([]);
   const [usagePeriod, setUsagePeriod] = useState<'week' | 'month' | 'all'>('week');
+
+  // Auth & admin management state
+  const [authToken, setAuthToken] = useState<string | null>(() => localStorage.getItem(AUTH_TOKEN_KEY));
+  const [authUsername, setAuthUsername] = useState<string | null>(() => localStorage.getItem(AUTH_USERNAME_KEY));
+  const [usageSubView, setUsageSubView] = useState<'usage' | 'admins'>('usage');
+  const [loginForm, setLoginForm] = useState({ username: '', password: '' });
+  const [loginError, setLoginError] = useState('');
+  const [loginBusy, setLoginBusy] = useState(false);
+  const [admins, setAdmins] = useState<Admin[]>([]);
+  const [newAdminForm, setNewAdminForm] = useState({ username: '', password: '' });
+  const [adminActionError, setAdminActionError] = useState('');
+  const [adminActionBusy, setAdminActionBusy] = useState(false);
 
   // Keep refs in sync
   useEffect(() => { isListeningRef.current = isListening; }, [isListening]);
   useEffect(() => { targetLangRef.current = targetLang; }, [targetLang]);
   useEffect(() => { sourceLangRef.current = sourceLang; }, [sourceLang]);
 
-  // Lock body scroll in embed mode to prevent iOS bounce / page scroll
-  useEffect(() => {
-    if (!isEmbed) return;
-    const html = document.documentElement;
-    const body = document.body;
-    const styles = 'overflow:hidden;position:fixed;width:100%;height:100%;';
-    html.style.cssText += styles;
-    body.style.cssText += styles;
-    return () => {
-      html.style.overflow = '';
-      html.style.position = '';
-      html.style.width = '';
-      html.style.height = '';
-      body.style.overflow = '';
-      body.style.position = '';
-      body.style.width = '';
-      body.style.height = '';
-    };
-  }, [isEmbed]);
+  useLockBodyScroll(isEmbed);
+  useParentMessages({ onSetTargetLang: setTargetLang });
 
   useEffect(() => {
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
       setIsSupported(true);
     }
     checkMicrophonePermission();
-  }, []);
-
-  // postMessage API for iframe communication
-  useEffect(() => {
-    const handler = (event: MessageEvent) => {
-      const { type, payload } = event.data || {};
-      if (type === 'SET_TARGET_LANG' && payload?.lang) {
-        setTargetLang(payload.lang);
-      }
-    };
-    window.addEventListener('message', handler);
-    return () => window.removeEventListener('message', handler);
-  }, []);
-
-  // Broadcast translation results to parent
-  const postTranslationResult = useCallback((item: typeof translationHistory[0]) => {
-    if (window.parent !== window) {
-      window.parent.postMessage({
-        type: 'TRANSLATION_RESULT',
-        payload: item,
-      }, '*');
-    }
   }, []);
 
   const checkMicrophonePermission = async () => {
@@ -188,36 +121,12 @@ const VoiceTranslator = () => {
   };
 
   // Translate using backend API
-  const translateText = async (text: string, target: string, source?: string): Promise<{ translation: string; detectedLang: string; char_count?: number; estimated_cost_usd?: number } | null> => {
+  const translateText = async (text: string, target: string, source?: string) => {
     if (!text) return null;
     setIsTranslating(true);
     setError('');
-
     try {
-      const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? '';
-      const body: Record<string, string> = { text, target };
-      if (source && source !== 'auto') body.source = source;
-      const response = await fetch(`${BACKEND_URL}/api/translate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || '翻譯請求失敗');
-      }
-
-      const data = await response.json();
-      if (data.success && data.translation) {
-        return {
-          translation: data.translation,
-          detectedLang: data.detectedSourceLanguage || data.source || '?',
-          char_count: data.char_count ?? 0,
-          estimated_cost_usd: data.estimated_cost_usd ?? 0,
-        };
-      }
-      throw new Error('無法取得翻譯結果');
+      return await translate(text, target, source);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('ECONNREFUSED')) setError('無法連接到翻譯服務');
@@ -260,7 +169,7 @@ const VoiceTranslator = () => {
             if (exists) return prev;
             return [newItem, ...prev].slice(0, 20);
           });
-          postTranslationResult(newItem);
+          postTranslationResultToParent(newItem);
         }
         return;
       }
@@ -280,9 +189,9 @@ const VoiceTranslator = () => {
         if (exists) return prev;
         return [newItem, ...prev].slice(0, 20);
       });
-      postTranslationResult(newItem);
+      postTranslationResultToParent(newItem);
     }
-  }, [postTranslationResult]);
+  }, []);
 
   const toggleListening = async () => {
     if (!isSupported) {
@@ -303,13 +212,17 @@ const VoiceTranslator = () => {
 
   const startListening = () => {
     try {
-      const SpeechRecognition = window.webkitSpeechRecognition || window.SpeechRecognition;
+      const SpeechRecognitionCtor = window.webkitSpeechRecognition || window.SpeechRecognition;
+      if (!SpeechRecognitionCtor) {
+        setError('您的瀏覽器不支援語音識別功能。');
+        return;
+      }
       if (recognitionRef.current) {
         try { recognitionRef.current.stop(); } catch { /* */ }
         recognitionRef.current = null;
       }
 
-      const recognition = new SpeechRecognition();
+      const recognition = new SpeechRecognitionCtor();
       recognition.continuous = true;
       recognition.interimResults = true;
       // When auto-detect, use browser language as speech recognition hint (empty string falls back to OS default which is unreliable)
@@ -323,7 +236,7 @@ const VoiceTranslator = () => {
         setError('');
       };
 
-      recognition.onresult = (event: any) => {
+      recognition.onresult = (event: SpeechRecognitionEvent) => {
         let finalTranscript = '';
         let interimTranscript = '';
 
@@ -369,7 +282,7 @@ const VoiceTranslator = () => {
         }
       };
 
-      recognition.onerror = (event: any) => {
+      recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
         switch (event.error) {
           case 'not-allowed':
             setError('麥克風權限被拒絕。');
@@ -448,60 +361,298 @@ const VoiceTranslator = () => {
     };
   }, []);
 
-  // Fetch usage data when switching to usage view
-  const fetchUsageData = useCallback(async () => {
-    const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? '';
+  // ── Auth helpers ──────────────────────────────────────────────────────────
+  const persistAuth = useCallback((token: string | null, username: string | null) => {
+    setAuthToken(token);
+    setAuthUsername(username);
+    if (token) localStorage.setItem(AUTH_TOKEN_KEY, token);
+    else localStorage.removeItem(AUTH_TOKEN_KEY);
+    if (username) localStorage.setItem(AUTH_USERNAME_KEY, username);
+    else localStorage.removeItem(AUTH_USERNAME_KEY);
+  }, []);
+
+  const handleLogout = useCallback(() => {
+    persistAuth(null, null);
+    setUsageSubView('usage');
+    setUsageSummary(null);
+    setUsageRecent([]);
+    setAdmins([]);
+  }, [persistAuth]);
+
+  const authTokenRef = useRef(authToken);
+  useEffect(() => { authTokenRef.current = authToken; }, [authToken]);
+
+  // Memoise an authed-fetch tied to the current token ref; recreated only when
+  // the logout handler identity changes (i.e. essentially once).
+  const authedFetch = useCallback(
+    (url: string, init?: RequestInit) =>
+      makeAuthedFetch(() => authTokenRef.current, handleLogout)(url, init),
+    [handleLogout],
+  );
+
+  const handleLogin = useCallback(async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!loginForm.username.trim() || !loginForm.password) {
+      setLoginError('請輸入帳號與密碼');
+      return;
+    }
+    setLoginBusy(true);
+    setLoginError('');
     try {
-      const [summaryRes, recentRes] = await Promise.all([
-        fetch(`${BACKEND_URL}/api/usage/summary${usagePeriod !== 'all' ? `?period=${usagePeriod}` : ''}`),
-        fetch(`${BACKEND_URL}/api/usage/recent`),
+      const data = await apiLogin(loginForm.username, loginForm.password);
+      persistAuth(data.token, data.username);
+      setLoginForm({ username: '', password: '' });
+    } catch (err) {
+      setLoginError(err instanceof Error ? err.message : '無法連線到伺服器');
+    } finally {
+      setLoginBusy(false);
+    }
+  }, [loginForm, persistAuth]);
+
+  // Fetch usage data when switching to usage view (requires auth)
+  const fetchUsageData = useCallback(async () => {
+    if (!authToken) return;
+    try {
+      const [summary, recent] = await Promise.all([
+        fetchUsageSummary(authedFetch, usagePeriod),
+        fetchUsageRecent(authedFetch),
       ]);
-      if (summaryRes.ok) {
-        const summaryData = await summaryRes.json();
-        setUsageSummary(summaryData);
-      }
-      if (recentRes.ok) {
-        const recentData = await recentRes.json();
-        setUsageRecent(Array.isArray(recentData) ? recentData : recentData.records || []);
-      }
+      if (summary) setUsageSummary(summary);
+      setUsageRecent(recent);
     } catch {
       // Silently fail - usage is informational
     }
-  }, [usagePeriod]);
+  }, [authToken, authedFetch, usagePeriod]);
+
+  const fetchAdmins = useCallback(async () => {
+    if (!authToken) return;
+    try {
+      setAdmins(await apiFetchAdmins(authedFetch));
+    } catch { /* ignore */ }
+  }, [authToken, authedFetch]);
+
+  const handleAddAdmin = useCallback(async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    setAdminActionError('');
+    if (!newAdminForm.username.trim() || !newAdminForm.password) {
+      setAdminActionError('請輸入帳號與密碼');
+      return;
+    }
+    setAdminActionBusy(true);
+    try {
+      await createAdmin(authedFetch, newAdminForm.username, newAdminForm.password);
+      setNewAdminForm({ username: '', password: '' });
+      fetchAdmins();
+    } catch (err) {
+      setAdminActionError(err instanceof Error ? err.message : '無法連線到伺服器');
+    } finally {
+      setAdminActionBusy(false);
+    }
+  }, [authedFetch, fetchAdmins, newAdminForm]);
+
+  const handleDeleteAdmin = useCallback(async (id: number, username: string) => {
+    if (!window.confirm(`確定要刪除管理員「${username}」嗎？`)) return;
+    setAdminActionError('');
+    try {
+      await deleteAdmin(authedFetch, id);
+      fetchAdmins();
+    } catch (err) {
+      setAdminActionError(err instanceof Error ? err.message : '無法連線到伺服器');
+    }
+  }, [authedFetch, fetchAdmins]);
 
   useEffect(() => {
-    if (embedView === 'usage') {
-      fetchUsageData();
-    }
-  }, [embedView, fetchUsageData]);
+    if (embedView !== 'usage' || !authToken) return;
+    if (usageSubView === 'usage') fetchUsageData();
+    else if (usageSubView === 'admins') fetchAdmins();
+  }, [embedView, authToken, usageSubView, fetchUsageData, fetchAdmins]);
 
   // ── EMBED MODE UI ────────────────────────────────────────────────────────────
   if (isEmbed) {
 
-    // ── USAGE VIEW ──
+    // ── USAGE VIEW (admin-protected) ──
     if (embedView === 'usage') {
-      const summary = usageSummary || {};
-      const totalRequests = summary.total_requests ?? 0;
-      const totalChars = summary.total_chars ?? 0;
-      const estimatedCost = summary.estimated_cost_usd ?? 0;
-      const freeRemaining = summary.free_remaining ?? 0;
-      const freeLimit = summary.free_limit ?? 500000;
+      const containerStyle: React.CSSProperties = { background: '#faf9f6', color: '#2d2d2d', fontFamily: 'system-ui, sans-serif', touchAction: 'none' };
+
+      // Not authenticated → login form
+      if (!authToken) {
+        return (
+          <div className="h-screen w-screen flex flex-col overflow-hidden fixed inset-0" style={containerStyle}>
+            <div className="flex items-center gap-3 px-5 py-4 flex-shrink-0">
+              <button onClick={() => setEmbedView('translate')} className="p-1.5 rounded-xl transition-colors" style={{ color: '#888888' }}>
+                <ChevronLeft className="w-5 h-5" />
+              </button>
+              <span className="text-xs tracking-widest uppercase" style={{ color: '#888888', letterSpacing: '0.15em' }}>後台登入</span>
+            </div>
+            <div className="flex-1 overflow-y-auto px-5 pb-6 flex flex-col items-center justify-center">
+              <form onSubmit={handleLogin} className="w-full max-w-sm rounded-2xl p-6" style={{ background: '#ffffff', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+                <p className="text-xs tracking-widest uppercase mb-5 text-center" style={{ color: '#888888', letterSpacing: '0.15em' }}>請輸入管理員帳號</p>
+                <input
+                  type="text"
+                  autoComplete="username"
+                  placeholder="帳號"
+                  value={loginForm.username}
+                  onChange={(e) => setLoginForm(f => ({ ...f, username: e.target.value }))}
+                  className="w-full px-4 py-3 rounded-xl text-base outline-none mb-3"
+                  style={{ background: '#faf9f6', border: '1px solid #e8e4df', color: '#2d2d2d' }}
+                />
+                <input
+                  type="password"
+                  autoComplete="current-password"
+                  placeholder="密碼"
+                  value={loginForm.password}
+                  onChange={(e) => setLoginForm(f => ({ ...f, password: e.target.value }))}
+                  className="w-full px-4 py-3 rounded-xl text-base outline-none mb-4"
+                  style={{ background: '#faf9f6', border: '1px solid #e8e4df', color: '#2d2d2d' }}
+                />
+                {loginError && (
+                  <div className="mb-3 px-3 py-2 rounded-xl text-sm" style={{ background: '#fef2f2', color: '#c75050', border: '1px solid #fecaca' }}>
+                    {loginError}
+                  </div>
+                )}
+                <button
+                  type="submit"
+                  disabled={loginBusy}
+                  className="w-full py-3 rounded-xl font-medium transition-all disabled:opacity-60"
+                  style={{ background: '#c8956c', color: '#ffffff' }}
+                >
+                  {loginBusy ? '登入中...' : '登入'}
+                </button>
+              </form>
+            </div>
+          </div>
+        );
+      }
+
+      const topBar = (
+        <>
+          <div className="flex items-center justify-between gap-3 px-5 py-4 flex-shrink-0">
+            <div className="flex items-center gap-3 min-w-0">
+              <button onClick={() => setEmbedView('translate')} className="p-1.5 rounded-xl transition-colors flex-shrink-0" style={{ color: '#888888' }}>
+                <ChevronLeft className="w-5 h-5" />
+              </button>
+              <span className="text-xs tracking-widest uppercase truncate" style={{ color: '#888888', letterSpacing: '0.15em' }}>
+                {usageSubView === 'usage' ? '用量統計' : '管理員管理'}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <span className="text-xs" style={{ color: '#888888' }}>{authUsername}</span>
+              <button onClick={handleLogout} className="p-1.5 rounded-xl transition-colors" style={{ color: '#888888' }} title="登出">
+                <LogOut className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          {/* Sub-view tabs */}
+          <div className="flex gap-2 px-5 mb-4 flex-shrink-0">
+            {([['usage', '用量', BarChart3], ['admins', '管理員', Users]] as const).map(([key, label, Icon]) => (
+              <button
+                key={key}
+                onClick={() => setUsageSubView(key)}
+                className="px-4 py-1.5 rounded-full text-sm transition-all flex items-center gap-1.5"
+                style={{
+                  background: usageSubView === key ? '#c8956c' : '#ffffff',
+                  color: usageSubView === key ? '#ffffff' : '#888888',
+                  fontWeight: usageSubView === key ? 600 : 400,
+                  boxShadow: usageSubView === key ? 'none' : '0 1px 3px rgba(0,0,0,0.06)',
+                }}
+              >
+                <Icon className="w-3.5 h-3.5" />
+                {label}
+              </button>
+            ))}
+          </div>
+        </>
+      );
+
+      // ── Admins sub-view ──
+      if (usageSubView === 'admins') {
+        return (
+          <div className="h-screen w-screen flex flex-col overflow-hidden fixed inset-0" style={containerStyle}>
+            {topBar}
+            <div className="flex-1 overflow-y-auto px-5 pb-6" style={{ scrollbarWidth: 'thin', scrollbarColor: '#e8e4df transparent', touchAction: 'pan-y', WebkitOverflowScrolling: 'touch' } as React.CSSProperties}>
+              {/* New admin form */}
+              <form onSubmit={handleAddAdmin} className="rounded-2xl p-5 mb-5" style={{ background: '#ffffff', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+                <p className="text-xs tracking-widest uppercase mb-4" style={{ color: '#888888', letterSpacing: '0.15em' }}>新增管理員</p>
+                <input
+                  type="text"
+                  placeholder="帳號（3-32 字元）"
+                  value={newAdminForm.username}
+                  onChange={(e) => setNewAdminForm(f => ({ ...f, username: e.target.value }))}
+                  className="w-full px-4 py-3 rounded-xl text-base outline-none mb-3"
+                  style={{ background: '#faf9f6', border: '1px solid #e8e4df', color: '#2d2d2d' }}
+                />
+                <input
+                  type="password"
+                  placeholder="密碼（至少 6 字元）"
+                  value={newAdminForm.password}
+                  onChange={(e) => setNewAdminForm(f => ({ ...f, password: e.target.value }))}
+                  className="w-full px-4 py-3 rounded-xl text-base outline-none mb-3"
+                  style={{ background: '#faf9f6', border: '1px solid #e8e4df', color: '#2d2d2d' }}
+                />
+                {adminActionError && (
+                  <div className="mb-3 px-3 py-2 rounded-xl text-sm" style={{ background: '#fef2f2', color: '#c75050', border: '1px solid #fecaca' }}>
+                    {adminActionError}
+                  </div>
+                )}
+                <button
+                  type="submit"
+                  disabled={adminActionBusy}
+                  className="w-full py-3 rounded-xl font-medium transition-all flex items-center justify-center gap-2 disabled:opacity-60"
+                  style={{ background: '#c8956c', color: '#ffffff' }}
+                >
+                  <UserPlus className="w-4 h-4" />
+                  {adminActionBusy ? '處理中...' : '新增'}
+                </button>
+              </form>
+
+              {/* Admin list */}
+              <p className="text-xs tracking-widest uppercase mb-3" style={{ color: '#888888', letterSpacing: '0.15em' }}>現有管理員（{admins.length}）</p>
+              <div className="space-y-2">
+                {admins.length === 0 ? (
+                  <p className="text-sm py-6 text-center" style={{ color: '#888888' }}>載入中...</p>
+                ) : (
+                  admins.map(admin => (
+                    <div key={admin.id} className="rounded-2xl p-4 flex items-center justify-between" style={{ background: '#ffffff', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+                      <div className="min-w-0">
+                        <p className="text-sm" style={{ color: '#2d2d2d' }}>
+                          {admin.username}
+                          {admin.username === authUsername && <span className="ml-2 text-xs" style={{ color: '#c8956c' }}>（你）</span>}
+                        </p>
+                        <p className="text-xs mt-0.5" style={{ color: '#888888' }}>
+                          建立於 {admin.created_at ? new Date(admin.created_at + 'Z').toLocaleString('zh-TW', { year: 'numeric', month: 'short', day: 'numeric' }) : '—'}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => handleDeleteAdmin(admin.id, admin.username)}
+                        disabled={admin.username === authUsername}
+                        className="p-2 rounded-xl transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                        style={{ color: '#c75050' }}
+                        title={admin.username === authUsername ? '無法刪除自己' : '刪除'}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      // ── Usage sub-view (default) ──
+      const summary = usageSummary;
+      const totalRequests = summary?.total_requests ?? 0;
+      const totalChars = summary?.total_chars ?? 0;
+      const estimatedCost = summary?.estimated_cost_usd ?? summary?.total_cost_estimated ?? 0;
+      const freeRemaining = summary?.free_remaining ?? 0;
+      const freeLimit = summary?.free_limit ?? summary?.free_tier_limit ?? 500000;
       const freePercent = freeLimit > 0 ? Math.min(100, ((freeLimit - freeRemaining) / freeLimit) * 100) : 0;
 
       return (
-        <div className="h-screen w-screen flex flex-col overflow-hidden fixed inset-0" style={{ background: '#faf9f6', color: '#2d2d2d', fontFamily: 'system-ui, sans-serif', touchAction: 'none' }}>
-
-          {/* Top bar */}
-          <div className="flex items-center gap-3 px-5 py-4 flex-shrink-0">
-            <button
-              onClick={() => setEmbedView('translate')}
-              className="p-1.5 rounded-xl transition-colors"
-              style={{ color: '#888888' }}
-            >
-              <ChevronLeft className="w-5 h-5" />
-            </button>
-            <span className="text-xs tracking-widest uppercase" style={{ color: '#888888', letterSpacing: '0.15em' }}>用量統計</span>
-          </div>
+        <div className="h-screen w-screen flex flex-col overflow-hidden fixed inset-0" style={containerStyle}>
+          {topBar}
 
           {/* Period tabs */}
           <div className="flex gap-2 px-5 mb-5 flex-shrink-0">
@@ -509,12 +660,11 @@ const VoiceTranslator = () => {
               <button
                 key={key}
                 onClick={() => setUsagePeriod(key)}
-                className="px-4 py-1.5 rounded-full text-sm transition-all"
+                className="px-4 py-1.5 rounded-full text-xs transition-all"
                 style={{
-                  background: usagePeriod === key ? '#c8956c' : '#ffffff',
-                  color: usagePeriod === key ? '#ffffff' : '#888888',
+                  background: usagePeriod === key ? '#f0ede8' : 'transparent',
+                  color: usagePeriod === key ? '#2d2d2d' : '#888888',
                   fontWeight: usagePeriod === key ? 600 : 400,
-                  boxShadow: usagePeriod === key ? 'none' : '0 1px 3px rgba(0,0,0,0.06)',
                 }}
               >
                 {label}
@@ -560,7 +710,7 @@ const VoiceTranslator = () => {
                 {usageRecent.length === 0 ? (
                   <p className="text-sm py-6 text-center" style={{ color: '#888888' }}>暫無記錄</p>
                 ) : (
-                  usageRecent.map((record: any, idx: number) => (
+                  usageRecent.map((record, idx) => (
                     <div key={idx} className="rounded-2xl p-4" style={{ background: '#ffffff', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
                       <div className="flex items-center justify-between mb-1">
                         <span className="text-sm" style={{ color: '#2d2d2d' }}>

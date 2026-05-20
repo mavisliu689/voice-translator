@@ -17,6 +17,11 @@ dist-ssr
 .env.local
 .env.production
 
+# Runtime data (SQLite usage tracking — must not be committed)
+server/data/*.db
+server/data/*.db-shm
+server/data/*.db-wal
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
