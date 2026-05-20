@@ -13,7 +13,14 @@ services:
       - NODE_ENV=production
       - PORT=5876
       - GOOGLE_TRANSLATE_API_KEY=${GOOGLE_TRANSLATE_API_KEY}
+      - JWT_SECRET=${JWT_SECRET}
+      - ADMIN_USERNAME=${ADMIN_USERNAME}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
       - FRONTEND_URL=*
+    volumes:
+      # Persist SQLite usage + admins DB across container rebuilds
+      - ./server-data:/app/server/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5876/health"]
