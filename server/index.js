@@ -8,6 +8,8 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import Database from 'better-sqlite3';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -31,7 +33,14 @@ db.exec(`
     target_lang TEXT,
     char_count INTEGER,
     estimated_cost_usd REAL
-  )
+  );
+
+  CREATE TABLE IF NOT EXISTS admins (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
 `);
 
 // Prepare statements for performance
@@ -39,6 +48,67 @@ const insertTranslation = db.prepare(`
   INSERT INTO translations (source_lang, target_lang, char_count, estimated_cost_usd)
   VALUES (@source_lang, @target_lang, @char_count, @estimated_cost_usd)
 `);
+
+// ---------------------------------------------------------------------------
+// Auth: bootstrap initial admin, JWT helpers, auth middleware
+// ---------------------------------------------------------------------------
+const IS_PROD = process.env.NODE_ENV === 'production';
+
+// Fail-fast on missing critical secrets in production — a leaked default JWT
+// secret would let anyone mint admin tokens.
+if (IS_PROD && !process.env.JWT_SECRET) {
+  console.error('FATAL: JWT_SECRET must be set in production');
+  process.exit(1);
+}
+if (IS_PROD && !process.env.GOOGLE_TRANSLATE_API_KEY) {
+  console.error('FATAL: GOOGLE_TRANSLATE_API_KEY must be set in production');
+  process.exit(1);
+}
+
+const JWT_SECRET = process.env.JWT_SECRET || 'dev-only-insecure-secret-change-me';
+const JWT_EXPIRES_IN = '12h';
+const BCRYPT_ROUNDS = 12;
+
+// Supported language codes — keep in sync with /api/languages and frontend `languages`
+const SUPPORTED_LANGS = new Set([
+  'zh-TW', 'zh-CN', 'en', 'ja', 'ko', 'es', 'fr', 'de',
+  'pt', 'ru', 'ar', 'hi', 'th', 'vi', 'id', 'it',
+]);
+
+function hashPassword(plain) {
+  return bcrypt.hashSync(plain, BCRYPT_ROUNDS);
+}
+
+function bootstrapAdmin() {
+  const count = db.prepare('SELECT COUNT(*) AS n FROM admins').get().n;
+  if (count > 0) return;
+  const username = process.env.ADMIN_USERNAME;
+  const password = process.env.ADMIN_PASSWORD;
+  if (!username || !password) {
+    console.warn('⚠️  尚無管理員且未設定 ADMIN_USERNAME / ADMIN_PASSWORD，後台將無法登入。請於 .env 設定後重啟。');
+    return;
+  }
+  db.prepare('INSERT INTO admins (username, password_hash) VALUES (?, ?)')
+    .run(username, hashPassword(password));
+  console.log(`👤 已建立初始管理員: ${username}`);
+}
+bootstrapAdmin();
+
+function requireAuth(req, res, next) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token) return res.status(401).json({ error: '未授權，請先登入' });
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    // Confirm the admin still exists (handles deleted accounts)
+    const admin = db.prepare('SELECT id, username FROM admins WHERE id = ?').get(payload.sub);
+    if (!admin) return res.status(401).json({ error: '帳號已不存在，請重新登入' });
+    req.admin = admin;
+    next();
+  } catch {
+    return res.status(401).json({ error: '登入已過期，請重新登入' });
+  }
+}
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -49,7 +119,8 @@ app.use(helmet({
     directives: {
       ...helmet.contentSecurityPolicy.getDefaultDirectives(),
       'frame-ancestors': ["'self'", 'https://www.tissa.tw', 'https://tissa.tw', 'https://www.cisanet.org.tw', 'https://cisanet.org.tw'],
-      // Remove default script-src/style-src restrictions for embedded mode
+      // Setting to null removes these directives so browsers fall back to default-src 'self'.
+      // (helmet defaults add `https:` to script-src/style-src, which we don't need for a bundled SPA.)
       'script-src': null,
       'style-src': null,
     },
@@ -80,7 +151,9 @@ app.use(cors({
 }));
 
 app.use(morgan('combined'));
-app.use(express.json());
+// Translation payload is capped at 5000 chars (~20KB UTF-8); 64KB leaves headroom
+// for auth/admin payloads while preventing oversized requests from reaching us.
+app.use(express.json({ limit: '64kb' }));
 
 // Rate limiting
 const limiter = rateLimit({
@@ -114,7 +187,7 @@ app.post('/api/translate', translationLimiter, async (req, res) => {
   try {
     const { text, source, target } = req.body;
 
-    if (!text || !target) {
+    if (typeof text !== 'string' || !text.trim() || typeof target !== 'string') {
       return res.status(400).json({
         error: '缺少必要參數',
         required: ['text', 'target']
@@ -125,6 +198,13 @@ app.post('/api/translate', translationLimiter, async (req, res) => {
       return res.status(400).json({
         error: '文字過長，最多支援 5000 個字元'
       });
+    }
+
+    if (!SUPPORTED_LANGS.has(target)) {
+      return res.status(400).json({ error: `不支援的目標語言: ${target}` });
+    }
+    if (source && !SUPPORTED_LANGS.has(source)) {
+      return res.status(400).json({ error: `不支援的來源語言: ${source}` });
     }
 
     const API_KEY = process.env.GOOGLE_TRANSLATE_API_KEY;
@@ -240,11 +320,83 @@ app.get('/api/languages', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Usage tracking endpoints
+// Auth endpoints
+// ---------------------------------------------------------------------------
+
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: '登入嘗試次數過多，請 15 分鐘後再試',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+app.post('/api/auth/login', loginLimiter, (req, res) => {
+  const { username, password } = req.body || {};
+  if (!username || !password) {
+    return res.status(400).json({ error: '請輸入帳號與密碼' });
+  }
+  const admin = db.prepare('SELECT id, username, password_hash FROM admins WHERE username = ?').get(username);
+  if (!admin || !bcrypt.compareSync(password, admin.password_hash)) {
+    return res.status(401).json({ error: '帳號或密碼錯誤' });
+  }
+  const token = jwt.sign({ sub: admin.id, username: admin.username }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+  res.json({ token, username: admin.username });
+});
+
+app.get('/api/auth/me', requireAuth, (req, res) => {
+  res.json({ username: req.admin.username, id: req.admin.id });
+});
+
+// ---------------------------------------------------------------------------
+// Admin management (protected)
+// ---------------------------------------------------------------------------
+app.get('/api/admins', requireAuth, (req, res) => {
+  const rows = db.prepare('SELECT id, username, created_at FROM admins ORDER BY id ASC').all();
+  res.json({ admins: rows });
+});
+
+app.post('/api/admins', requireAuth, (req, res) => {
+  const { username, password } = req.body || {};
+  if (!username || !password) {
+    return res.status(400).json({ error: '請輸入帳號與密碼' });
+  }
+  if (username.length < 3 || username.length > 32) {
+    return res.status(400).json({ error: '帳號長度需介於 3 到 32 字元' });
+  }
+  if (password.length < 6) {
+    return res.status(400).json({ error: '密碼至少 6 個字元' });
+  }
+  try {
+    const info = db.prepare('INSERT INTO admins (username, password_hash) VALUES (?, ?)')
+      .run(username, hashPassword(password));
+    res.json({ id: info.lastInsertRowid, username });
+  } catch (err) {
+    if (String(err.message).includes('UNIQUE')) {
+      return res.status(409).json({ error: '帳號已存在' });
+    }
+    console.error('Create admin error:', err);
+    res.status(500).json({ error: '新增管理員失敗' });
+  }
+});
+
+app.delete('/api/admins/:id', requireAuth, (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: '無效的管理員 ID' });
+  const total = db.prepare('SELECT COUNT(*) AS n FROM admins').get().n;
+  if (total <= 1) return res.status(400).json({ error: '無法刪除最後一位管理員' });
+  if (id === req.admin.id) return res.status(400).json({ error: '無法刪除自己的帳號，請改由其他管理員操作' });
+  const info = db.prepare('DELETE FROM admins WHERE id = ?').run(id);
+  if (info.changes === 0) return res.status(404).json({ error: '找不到該管理員' });
+  res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Usage tracking endpoints (protected)
 // ---------------------------------------------------------------------------
 
 // GET /api/usage/summary -- current month totals with free-tier adjustment
-app.get('/api/usage/summary', (req, res) => {
+app.get('/api/usage/summary', requireAuth, (req, res) => {
   try {
     const now = new Date();
     const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -282,7 +434,7 @@ app.get('/api/usage/summary', (req, res) => {
 });
 
 // GET /api/usage/history?from=YYYY-MM-DD&to=YYYY-MM-DD -- daily breakdown
-app.get('/api/usage/history', (req, res) => {
+app.get('/api/usage/history', requireAuth, (req, res) => {
   try {
     const now = new Date();
     const defaultFrom = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
@@ -312,7 +464,7 @@ app.get('/api/usage/history', (req, res) => {
 });
 
 // GET /api/usage/recent -- last 50 translation records
-app.get('/api/usage/recent', (req, res) => {
+app.get('/api/usage/recent', requireAuth, (req, res) => {
   try {
     const records = db.prepare(`
       SELECT id, timestamp, source_lang, target_lang, char_count, estimated_cost_usd
