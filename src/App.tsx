@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Mic, MicOff, Volume2, ArrowRightLeft, Copy, AlertCircle, Shield, BarChart3, ChevronLeft, LogOut, UserPlus, Trash2, Users } from 'lucide-react';
+import { Mic, MicOff, Volume2, ArrowRightLeft, Copy, AlertCircle, Shield, BarChart3, ChevronLeft, LogOut, UserPlus, Trash2, Users, Settings, Sparkles, Zap } from 'lucide-react';
 import {
   languages,
   langName,
@@ -18,6 +18,10 @@ import {
   fetchAdmins as apiFetchAdmins,
   createAdmin,
   deleteAdmin,
+  fetchSettings,
+  updateSettings,
+  type AppSettings,
+  type TranslationModel,
 } from './lib/api';
 import {
   useIsEmbed,
@@ -36,6 +40,8 @@ const VoiceTranslator = () => {
   const [isListening, setIsListening] = useState(false);
   const [sourceText, setSourceText] = useState('');
   const [interimText, setInterimText] = useState('');
+  const [interimTranslation, setInterimTranslation] = useState('');
+  const [liveSubtitle, setLiveSubtitle] = useState(true);
   const [sourceLang, setSourceLang] = useState('auto');
   const [targetLang, setTargetLang] = useState('en');
   const [, setIsTranslating] = useState(false);
@@ -51,9 +57,13 @@ const VoiceTranslator = () => {
   const [isSupported, setIsSupported] = useState(false);
   const restartTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sentenceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const interimTranslateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastInterimTranslatedRef = useRef('');
   const isListeningRef = useRef(false);
   const targetLangRef = useRef(targetLang);
   const sourceLangRef = useRef(sourceLang);
+  const liveSubtitleRef = useRef(liveSubtitle);
+  const currentSentenceRef = useRef('');
 
   // Embed-specific state
   const [embedView, setEmbedView] = useState<'translate' | 'usage'>('translate');
@@ -65,7 +75,7 @@ const VoiceTranslator = () => {
   // Auth & admin management state
   const [authToken, setAuthToken] = useState<string | null>(() => localStorage.getItem(AUTH_TOKEN_KEY));
   const [authUsername, setAuthUsername] = useState<string | null>(() => localStorage.getItem(AUTH_USERNAME_KEY));
-  const [usageSubView, setUsageSubView] = useState<'usage' | 'admins'>('usage');
+  const [usageSubView, setUsageSubView] = useState<'usage' | 'admins' | 'settings'>('usage');
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
   const [loginError, setLoginError] = useState('');
   const [loginBusy, setLoginBusy] = useState(false);
@@ -73,11 +83,17 @@ const VoiceTranslator = () => {
   const [newAdminForm, setNewAdminForm] = useState({ username: '', password: '' });
   const [adminActionError, setAdminActionError] = useState('');
   const [adminActionBusy, setAdminActionBusy] = useState(false);
+  const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
+  const [settingsBusy, setSettingsBusy] = useState(false);
+  const [settingsError, setSettingsError] = useState('');
+  const [settingsNotice, setSettingsNotice] = useState('');
 
   // Keep refs in sync
   useEffect(() => { isListeningRef.current = isListening; }, [isListening]);
   useEffect(() => { targetLangRef.current = targetLang; }, [targetLang]);
   useEffect(() => { sourceLangRef.current = sourceLang; }, [sourceLang]);
+  useEffect(() => { liveSubtitleRef.current = liveSubtitle; }, [liveSubtitle]);
+  useEffect(() => { currentSentenceRef.current = currentSentence; }, [currentSentence]);
 
   useLockBodyScroll(isEmbed);
   useParentMessages({ onSetTargetLang: setTargetLang });
@@ -193,6 +209,24 @@ const VoiceTranslator = () => {
     }
   }, []);
 
+  // Debounced live-subtitle preview: translate the in-progress (interim) speech
+  // so users see the translation update as they speak, before the sentence finalizes.
+  const scheduleInterimTranslation = useCallback((text: string) => {
+    if (interimTranslateTimeoutRef.current) clearTimeout(interimTranslateTimeoutRef.current);
+    interimTranslateTimeoutRef.current = setTimeout(async () => {
+      const trimmed = text.trim();
+      if (!trimmed || trimmed === lastInterimTranslatedRef.current) return;
+      lastInterimTranslatedRef.current = trimmed;
+      try {
+        const result = await translate(trimmed, targetLangRef.current, sourceLangRef.current);
+        // Drop stale results: only show if still listening and this text is still the latest
+        if (result && isListeningRef.current && lastInterimTranslatedRef.current === trimmed) {
+          setInterimTranslation(result.translation);
+        }
+      } catch { /* preview errors are non-fatal */ }
+    }, 500);
+  }, []);
+
   const toggleListening = async () => {
     if (!isSupported) {
       setError('您的瀏覽器不支援語音識別功能。請使用 Chrome、Edge 或 Safari。');
@@ -274,11 +308,21 @@ const VoiceTranslator = () => {
               if (prev?.trim()) translateAndAddToHistory(prev.trim(), targetLangRef.current, sourceLangRef.current);
               return '';
             });
-          }, 3000);
+            setInterimTranslation('');
+            lastInterimTranslatedRef.current = '';
+          }, 1200);
 
           setInterimText('');
+          setInterimTranslation('');
+          lastInterimTranslatedRef.current = '';
         } else if (interimTranscript) {
           setInterimText(interimTranscript);
+          if (liveSubtitleRef.current) {
+            const preview = currentSentenceRef.current
+              ? currentSentenceRef.current + ' ' + interimTranscript
+              : interimTranscript;
+            scheduleInterimTranslation(preview);
+          }
         }
       };
 
@@ -329,6 +373,8 @@ const VoiceTranslator = () => {
   const stopListening = () => {
     setIsListening(false);
     setInterimText('');
+    setInterimTranslation('');
+    lastInterimTranslatedRef.current = '';
 
     setCurrentSentence(prev => {
       if (prev?.trim()) translateAndAddToHistory(prev.trim(), targetLangRef.current, sourceLangRef.current);
@@ -337,6 +383,7 @@ const VoiceTranslator = () => {
 
     if (restartTimeoutRef.current) { clearTimeout(restartTimeoutRef.current); restartTimeoutRef.current = null; }
     if (sentenceTimeoutRef.current) { clearTimeout(sentenceTimeoutRef.current); sentenceTimeoutRef.current = null; }
+    if (interimTranslateTimeoutRef.current) { clearTimeout(interimTranslateTimeoutRef.current); interimTranslateTimeoutRef.current = null; }
 
     if (recognitionRef.current) {
       try { recognitionRef.current.stop(); } catch { /* */ }
@@ -357,6 +404,8 @@ const VoiceTranslator = () => {
   useEffect(() => {
     return () => {
       if (restartTimeoutRef.current) clearTimeout(restartTimeoutRef.current);
+      if (sentenceTimeoutRef.current) clearTimeout(sentenceTimeoutRef.current);
+      if (interimTranslateTimeoutRef.current) clearTimeout(interimTranslateTimeoutRef.current);
       if (recognitionRef.current) { try { recognitionRef.current.stop(); } catch { /* */ } }
     };
   }, []);
@@ -461,11 +510,40 @@ const VoiceTranslator = () => {
     }
   }, [authedFetch, fetchAdmins]);
 
+  const loadSettings = useCallback(async () => {
+    if (!authToken) return;
+    setSettingsError('');
+    try {
+      const s = await fetchSettings(authedFetch);
+      if (s) setAppSettings(s);
+    } catch {
+      setSettingsError('無法載入設定');
+    }
+  }, [authToken, authedFetch]);
+
+  const handleChangeModel = useCallback(async (model: TranslationModel) => {
+    if (!appSettings || appSettings.active_model === model) return;
+    setSettingsBusy(true);
+    setSettingsError('');
+    setSettingsNotice('');
+    try {
+      await updateSettings(authedFetch, model);
+      setAppSettings(s => (s ? { ...s, active_model: model } : s));
+      setSettingsNotice(model === 'premium' ? '已切換為高品質模式' : '已切換為標準模式');
+      window.setTimeout(() => setSettingsNotice(''), 2500);
+    } catch (err) {
+      setSettingsError(err instanceof Error ? err.message : '儲存失敗');
+    } finally {
+      setSettingsBusy(false);
+    }
+  }, [appSettings, authedFetch]);
+
   useEffect(() => {
     if (embedView !== 'usage' || !authToken) return;
     if (usageSubView === 'usage') fetchUsageData();
     else if (usageSubView === 'admins') fetchAdmins();
-  }, [embedView, authToken, usageSubView, fetchUsageData, fetchAdmins]);
+    else if (usageSubView === 'settings') loadSettings();
+  }, [embedView, authToken, usageSubView, fetchUsageData, fetchAdmins, loadSettings]);
 
   // ── EMBED MODE UI ────────────────────────────────────────────────────────────
   if (isEmbed) {
@@ -532,7 +610,7 @@ const VoiceTranslator = () => {
                 <ChevronLeft className="w-5 h-5" />
               </button>
               <span className="text-xs tracking-widest uppercase truncate" style={{ color: '#888888', letterSpacing: '0.15em' }}>
-                {usageSubView === 'usage' ? '用量統計' : '管理員管理'}
+                {usageSubView === 'usage' ? '用量統計' : usageSubView === 'admins' ? '管理員管理' : '系統設定'}
               </span>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">
@@ -545,7 +623,7 @@ const VoiceTranslator = () => {
 
           {/* Sub-view tabs */}
           <div className="flex gap-2 px-5 mb-4 flex-shrink-0">
-            {([['usage', '用量', BarChart3], ['admins', '管理員', Users]] as const).map(([key, label, Icon]) => (
+            {([['usage', '用量', BarChart3], ['admins', '管理員', Users], ['settings', '設定', Settings]] as const).map(([key, label, Icon]) => (
               <button
                 key={key}
                 onClick={() => setUsageSubView(key)}
@@ -635,6 +713,107 @@ const VoiceTranslator = () => {
                     </div>
                   ))
                 )}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      // ── Settings sub-view ──
+      if (usageSubView === 'settings') {
+        const currentModel = appSettings?.active_model ?? 'basic';
+        const geminiReady = appSettings?.gemini_configured ?? false;
+
+        const modelOptions: Array<{
+          key: TranslationModel;
+          title: string;
+          desc: string;
+          cost: string;
+          Icon: typeof Zap;
+          disabled?: boolean;
+          disabledReason?: string;
+        }> = [
+          {
+            key: 'basic',
+            title: '標準（Google Translate）',
+            desc: '速度快、每月前 50 萬字免費。適合一般使用。',
+            cost: '$0.00002 / 字元（超過免費額度後）',
+            Icon: Zap,
+          },
+          {
+            key: 'premium',
+            title: '高品質（Gemini 2.5 Flash）',
+            desc: '準確度與自動偵測語言較佳，回應略慢約 0.5–1 秒。',
+            cost: '約 $0.000004 / 字元（依 token 計費，無免費額度）',
+            Icon: Sparkles,
+            disabled: !geminiReady,
+            disabledReason: '伺服器尚未設定 GEMINI_API_KEY',
+          },
+        ];
+
+        return (
+          <div className="h-screen w-screen flex flex-col overflow-hidden fixed inset-0" style={containerStyle}>
+            {topBar}
+            <div className="flex-1 overflow-y-auto px-5 pb-6" style={{ scrollbarWidth: 'thin', scrollbarColor: '#e8e4df transparent', touchAction: 'pan-y', WebkitOverflowScrolling: 'touch' } as React.CSSProperties}>
+              <p className="text-xs tracking-widest uppercase mb-4" style={{ color: '#888888', letterSpacing: '0.15em' }}>翻譯引擎</p>
+
+              {settingsError && (
+                <div className="mb-3 px-3 py-2 rounded-xl text-sm" style={{ background: '#fef2f2', color: '#c75050', border: '1px solid #fecaca' }}>
+                  {settingsError}
+                </div>
+              )}
+              {settingsNotice && (
+                <div className="mb-3 px-3 py-2 rounded-xl text-sm" style={{ background: '#f0f9eb', color: '#5a8a3a', border: '1px solid #d4e9c5' }}>
+                  {settingsNotice}
+                </div>
+              )}
+
+              <div className="space-y-3">
+                {modelOptions.map(opt => {
+                  const isActive = currentModel === opt.key;
+                  const Icon = opt.Icon;
+                  return (
+                    <button
+                      key={opt.key}
+                      type="button"
+                      onClick={() => !opt.disabled && handleChangeModel(opt.key)}
+                      disabled={opt.disabled || settingsBusy}
+                      className="w-full text-left rounded-2xl p-5 transition-all disabled:cursor-not-allowed"
+                      style={{
+                        background: '#ffffff',
+                        border: isActive ? '2px solid #c8956c' : '2px solid transparent',
+                        boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
+                        opacity: opt.disabled ? 0.5 : 1,
+                      }}
+                    >
+                      <div className="flex items-start gap-3">
+                        <div
+                          className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
+                          style={{ background: isActive ? '#c8956c' : '#faf9f6', color: isActive ? '#ffffff' : '#c8956c' }}
+                        >
+                          <Icon className="w-5 h-5" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 mb-1">
+                            <p className="text-sm font-medium" style={{ color: '#2d2d2d' }}>{opt.title}</p>
+                            {isActive && (
+                              <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: '#c8956c', color: '#ffffff' }}>使用中</span>
+                            )}
+                          </div>
+                          <p className="text-xs mb-2" style={{ color: '#666666' }}>{opt.desc}</p>
+                          <p className="text-xs" style={{ color: '#888888' }}>{opt.cost}</p>
+                          {opt.disabled && opt.disabledReason && (
+                            <p className="text-xs mt-2" style={{ color: '#c75050' }}>{opt.disabledReason}</p>
+                          )}
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="mt-6 px-4 py-3 rounded-xl text-xs" style={{ background: '#fef9ef', color: '#8a6a3a', border: '1px solid #f0d9b5' }}>
+                提示：切換後立即生效，所有訪客（包含 iframe 嵌入站點）會使用新引擎。可在「用量」分頁查看各引擎的字元數與成本。
               </div>
             </div>
           </div>
@@ -801,7 +980,7 @@ const VoiceTranslator = () => {
 
         {/* Top bar */}
         <div className="flex items-center justify-between px-5 py-4 flex-shrink-0" style={{ borderBottom: '1px solid #e8e4df' }}>
-          <span className="text-xs tracking-widest uppercase" style={{ color: '#888888', letterSpacing: '0.15em' }}>翻譯</span>
+          <span className="text-xs tracking-widest uppercase" style={{ color: '#888888', letterSpacing: '0.15em' }}>翻譯 Translate</span>
           <button
             onClick={() => setEmbedView('usage')}
             className="p-2 rounded-xl transition-colors"
@@ -831,6 +1010,11 @@ const VoiceTranslator = () => {
                 {currentSentence}
                 {interimText && <span style={{ color: '#888888', fontStyle: 'italic' }}> {interimText}</span>}
               </p>
+              {liveSubtitle && interimTranslation && (
+                <p className="text-sm mt-1.5 pt-1.5" style={{ color: '#7a9a7e', borderTop: '1px dashed #e8e4df' }}>
+                  {interimTranslation}
+                </p>
+              )}
             </div>
           </div>
         )}
@@ -842,7 +1026,7 @@ const VoiceTranslator = () => {
               <div className="w-20 h-20 rounded-full flex items-center justify-center" style={{ background: 'rgba(200,149,108,0.1)' }}>
                 <Mic className="w-8 h-8" style={{ color: '#c8956c' }} />
               </div>
-              <p className="text-sm tracking-wider" style={{ color: '#888888' }}>輕觸開始翻譯</p>
+              <p className="text-sm tracking-wider text-center" style={{ color: '#888888' }}>輕觸開始翻譯<br />Tap to start translating</p>
             </div>
           ) : (
             <div className="space-y-4 py-2">
@@ -943,6 +1127,22 @@ const VoiceTranslator = () => {
           </button>
         </div>
 
+        {/* Live subtitle toggle */}
+        <div className="flex justify-center flex-shrink-0 pb-2">
+          <button
+            onClick={() => setLiveSubtitle(v => !v)}
+            className="flex items-center gap-1.5 text-xs px-3 py-1 rounded-full transition-colors"
+            style={{
+              color: liveSubtitle ? '#7a9a7e' : '#aaaaaa',
+              background: liveSubtitle ? 'rgba(122,154,126,0.1)' : 'transparent',
+            }}
+            title="即時翻譯字幕（邊說邊翻，會增加翻譯用量）"
+          >
+            <Zap className="w-3 h-3" />
+            即時字幕 {liveSubtitle ? '開' : '關'}
+          </button>
+        </div>
+
         {/* Bottom bar */}
         <div className="flex-shrink-0 pb-4 px-5 pt-1" style={{ background: '#faf9f6', borderTop: '1px solid #e8e4df' }}>
           {/* Text input */}
@@ -960,7 +1160,7 @@ const VoiceTranslator = () => {
                   setSourceText('');
                 }
               }}
-              placeholder="輸入文字翻譯..."
+              placeholder="輸入文字翻譯 / Type to translate..."
               className="flex-1 bg-transparent text-base outline-none"
               style={{ color: '#2d2d2d', caretColor: '#c8956c' }}
             />
@@ -1110,6 +1310,11 @@ const VoiceTranslator = () => {
                     {currentSentence}
                     {interimText && <span className="text-yellow-500 italic"> {interimText}</span>}
                   </p>
+                  {liveSubtitle && interimTranslation && (
+                    <p className="text-sm text-green-700 mt-1.5 pt-1.5 border-t border-dashed border-yellow-200">
+                      {interimTranslation}
+                    </p>
+                  )}
                 </div>
               </div>
             </div>
@@ -1221,13 +1426,23 @@ const VoiceTranslator = () => {
 
             <button
               onClick={() => {
-                setSourceText(''); setInterimText(''); setCurrentSentence('');
+                setSourceText(''); setInterimText(''); setCurrentSentence(''); setInterimTranslation('');
                 setTranslationHistory([]); setError(''); setDetectedLang(null);
                 if (sentenceTimeoutRef.current) { clearTimeout(sentenceTimeoutRef.current); sentenceTimeoutRef.current = null; }
               }}
               className="px-4 sm:px-6 py-2 sm:py-3 text-sm sm:text-base bg-gray-200 hover:bg-gray-300 rounded-lg font-medium transition-colors"
             >
               清除
+            </button>
+
+            <button
+              onClick={() => setLiveSubtitle(v => !v)}
+              className={`flex items-center gap-1 sm:gap-2 px-4 sm:px-6 py-2 sm:py-3 text-sm sm:text-base rounded-lg font-medium transition-colors ${
+                liveSubtitle ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-500'
+              }`}
+              title="即時翻譯字幕（邊說邊翻，會增加翻譯用量）"
+            >
+              <Zap className="w-4 h-4" /> 即時字幕 {liveSubtitle ? '開' : '關'}
             </button>
           </div>
 

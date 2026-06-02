@@ -125,3 +125,35 @@ export async function deleteAdmin(
     throw new Error(data.error || '刪除失敗');
   }
 }
+
+// ─── Settings (protected) ──────────────────────────────────────────────────
+
+export type TranslationModel = 'basic' | 'premium';
+
+export interface AppSettings {
+  active_model: TranslationModel;
+  gemini_configured: boolean;
+  available_models: TranslationModel[];
+}
+
+export async function fetchSettings(
+  authedFetch: (u: string, i?: RequestInit) => Promise<Response>,
+): Promise<AppSettings | null> {
+  const res = await authedFetch(`${BACKEND_URL}/api/settings`);
+  if (!res.ok) return null;
+  return res.json() as Promise<AppSettings>;
+}
+
+export async function updateSettings(
+  authedFetch: (u: string, i?: RequestInit) => Promise<Response>,
+  active_model: TranslationModel,
+): Promise<void> {
+  const res = await authedFetch(`${BACKEND_URL}/api/settings`, {
+    method: 'PUT',
+    body: JSON.stringify({ active_model }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || '儲存失敗');
+  }
+}

@@ -41,13 +41,43 @@ db.exec(`
     password_hash TEXT NOT NULL,
     created_at TEXT DEFAULT (datetime('now'))
   );
+
+  CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
 `);
+
+// Add model_used column to translations if missing (idempotent migration)
+const translationCols = db.prepare(`PRAGMA table_info(translations)`).all();
+if (!translationCols.some(c => c.name === 'model_used')) {
+  db.exec(`ALTER TABLE translations ADD COLUMN model_used TEXT DEFAULT 'basic'`);
+}
+
+// Bootstrap default active_model setting if not present
+db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('active_model', 'basic')`).run();
 
 // Prepare statements for performance
 const insertTranslation = db.prepare(`
-  INSERT INTO translations (source_lang, target_lang, char_count, estimated_cost_usd)
-  VALUES (@source_lang, @target_lang, @char_count, @estimated_cost_usd)
+  INSERT INTO translations (source_lang, target_lang, char_count, estimated_cost_usd, model_used)
+  VALUES (@source_lang, @target_lang, @char_count, @estimated_cost_usd, @model_used)
 `);
+
+const getSetting = db.prepare(`SELECT value FROM settings WHERE key = ?`);
+const upsertSetting = db.prepare(`
+  INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+  ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+`);
+
+// Valid translation model identifiers — keep in sync with /api/settings validation and frontend
+const VALID_MODELS = new Set(['basic', 'premium']);
+
+function getActiveModel() {
+  const row = getSetting.get('active_model');
+  const value = row?.value;
+  return VALID_MODELS.has(value) ? value : 'basic';
+}
 
 // ---------------------------------------------------------------------------
 // Auth: bootstrap initial admin, JWT helpers, auth middleware
@@ -182,24 +212,154 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Translation API - supports auto-detect (source can be empty)
+// ---------------------------------------------------------------------------
+// Translation engines — basic (Google Translate v2) and premium (Gemini Flash)
+// Both return: { translation, detectedSourceLanguage }
+// ---------------------------------------------------------------------------
+
+class TranslateError extends Error {
+  constructor(status, message) { super(message); this.status = status; }
+}
+
+const LANG_NAMES = {
+  'zh-TW': 'Traditional Chinese (zh-TW)',
+  en: 'English', ja: 'Japanese', ko: 'Korean', es: 'Spanish', fr: 'French',
+  de: 'German', pt: 'Portuguese', ru: 'Russian', ar: 'Arabic', hi: 'Hindi',
+  th: 'Thai', vi: 'Vietnamese', id: 'Indonesian', it: 'Italian',
+};
+
+async function translateWithGoogleV2(text, source, target) {
+  const API_KEY = process.env.GOOGLE_TRANSLATE_API_KEY;
+  if (!API_KEY) throw new TranslateError(500, '翻譯服務暫時不可用，請稍後再試');
+
+  const requestBody = { q: text, target, format: 'text' };
+  if (source) requestBody.source = source;
+
+  const response = await fetch(
+    `https://translation.googleapis.com/language/translate/v2?key=${API_KEY}`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(requestBody) }
+  );
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    console.error('Google API 錯誤:', errorData);
+    if (response.status === 403) throw new TranslateError(403, 'API 權限錯誤，請聯繫管理員');
+    if (response.status === 429) throw new TranslateError(429, 'API 請求限制，請稍後再試');
+    throw new TranslateError(500, errorData.error?.message || '翻譯請求失敗');
+  }
+
+  const data = await response.json();
+  const t = data.data?.translations?.[0];
+  if (!t?.translatedText) throw new TranslateError(500, '無法取得翻譯結果');
+
+  return {
+    translation: t.translatedText,
+    detectedSourceLanguage: t.detectedSourceLanguage || source || null,
+  };
+}
+
+async function translateWithGemini(text, source, target) {
+  const API_KEY = process.env.GEMINI_API_KEY;
+  if (!API_KEY) throw new TranslateError(500, '高品質翻譯服務未設定，請聯繫管理員');
+
+  const sourceHint = source
+    ? `The source language is ${LANG_NAMES[source] || source}.`
+    : 'Auto-detect the source language.';
+  const targetName = LANG_NAMES[target] || target;
+
+  const prompt = `You are a faithful translator. Translate the user's text into ${targetName}. ${sourceHint}
+
+CRITICAL RULES — follow strictly:
+1. Translate FAITHFULLY. Do NOT paraphrase, embellish, summarize, or "improve" the source.
+2. Preserve the exact meaning, including nuance, hedging, vagueness, and informality. If the source is casual, the translation must be casual. If the source is fragmented or awkward, keep it fragmented or awkward.
+3. Do NOT add information that is not in the source. Do NOT remove information that is in the source.
+4. Do NOT correct apparent typos, grammar mistakes, or speech-recognition errors — translate them as-is.
+5. Preserve all punctuation, line breaks, numbers, and proper nouns. Do not transliterate proper nouns unless a standard translation exists.
+6. If the source contains filler words ("呃", "那個", "um"), translate them with equivalent fillers.
+7. Output ONLY the translation. No quotes, no labels, no explanations, no alternatives.
+
+Source text (translate exactly what is between the triple backticks):
+\`\`\`
+${text}
+\`\`\``;
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': API_KEY },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0,
+          topP: 0.1,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: 'object',
+            properties: {
+              translation: { type: 'string' },
+              detected_source_language: { type: 'string', description: 'BCP-47 code like en, ja, zh-TW' },
+            },
+            required: ['translation', 'detected_source_language'],
+          },
+        },
+        // Disable safety blocks so we don't lose translations for benign edge cases
+        safetySettings: [
+          { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+          { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+          { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+          { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+        ],
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    console.error('Gemini API 錯誤:', errorData);
+    if (response.status === 403) throw new TranslateError(403, 'Gemini API 權限錯誤，請聯繫管理員');
+    if (response.status === 429) throw new TranslateError(429, 'API 請求限制，請稍後再試');
+    throw new TranslateError(500, errorData.error?.message || '翻譯請求失敗');
+  }
+
+  const data = await response.json();
+  const raw = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!raw) throw new TranslateError(500, '無法取得翻譯結果');
+
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch { throw new TranslateError(500, '翻譯結果格式錯誤'); }
+  if (!parsed.translation) throw new TranslateError(500, '無法取得翻譯結果');
+
+  // Normalize detected language to our supported set (Gemini may return e.g. "zh" instead of "zh-TW")
+  let detected = parsed.detected_source_language || source || null;
+  if (detected && !SUPPORTED_LANGS.has(detected)) {
+    const lower = detected.toLowerCase();
+    if (lower.startsWith('zh')) detected = 'zh-TW';
+    else if (SUPPORTED_LANGS.has(lower.slice(0, 2))) detected = lower.slice(0, 2);
+  }
+
+  return { translation: parsed.translation, detectedSourceLanguage: detected };
+}
+
+// Per-model cost estimate ($/char). Gemini Flash is billed by token but
+// char-rate is a stable proxy for usage tracking — Chinese ~1 token/char,
+// Latin ~0.25 token/char; we use a conservative blended rate.
+const MODEL_COSTS = {
+  basic:   0.00002,    // Google Translate v2 standard tier
+  premium: 0.000004,   // Gemini 2.5 Flash estimate (rough; per-token in reality)
+};
+
+// Translation API - dispatches to active model
 app.post('/api/translate', translationLimiter, async (req, res) => {
   try {
     const { text, source, target } = req.body;
 
     if (typeof text !== 'string' || !text.trim() || typeof target !== 'string') {
-      return res.status(400).json({
-        error: '缺少必要參數',
-        required: ['text', 'target']
-      });
+      return res.status(400).json({ error: '缺少必要參數', required: ['text', 'target'] });
     }
-
     if (text.length > 5000) {
-      return res.status(400).json({
-        error: '文字過長，最多支援 5000 個字元'
-      });
+      return res.status(400).json({ error: '文字過長，最多支援 5000 個字元' });
     }
-
     if (!SUPPORTED_LANGS.has(target)) {
       return res.status(400).json({ error: `不支援的目標語言: ${target}` });
     }
@@ -207,85 +367,47 @@ app.post('/api/translate', translationLimiter, async (req, res) => {
       return res.status(400).json({ error: `不支援的來源語言: ${source}` });
     }
 
-    const API_KEY = process.env.GOOGLE_TRANSLATE_API_KEY;
-    if (!API_KEY) {
-      console.error('Google Translation API Key 未設定');
-      return res.status(500).json({
-        error: '翻譯服務暫時不可用，請稍後再試'
-      });
+    const model = getActiveModel();
+    console.log(`翻譯請求 [${model}]: ${source || 'auto'} -> ${target}, 文字長度: ${text.length}`);
+
+    let result;
+    try {
+      result = model === 'premium'
+        ? await translateWithGemini(text, source, target)
+        : await translateWithGoogleV2(text, source, target);
+    } catch (err) {
+      if (err instanceof TranslateError) {
+        return res.status(err.status).json({ error: err.message });
+      }
+      throw err;
     }
 
-    const targetLanguage = target;
+    const char_count = text.length;
+    const estimated_cost_usd = char_count * (MODEL_COSTS[model] ?? MODEL_COSTS.basic);
 
-    // Build request body - omit source for auto-detect
-    const requestBody = {
-      q: text,
-      target: targetLanguage,
-      format: 'text'
-    };
-
-    if (source) {
-      requestBody.source = source;
-    }
-
-    console.log(`翻譯請求: ${source || 'auto'} -> ${targetLanguage}, 文字長度: ${text.length}`);
-
-    const response = await fetch(
-      `https://translation.googleapis.com/language/translate/v2?key=${API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody)
-      }
-    );
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      console.error('Google API 錯誤:', errorData);
-
-      if (response.status === 403) {
-        return res.status(403).json({ error: 'API 權限錯誤，請聯繫管理員' });
-      }
-      if (response.status === 429) {
-        return res.status(429).json({ error: 'API 請求限制，請稍後再試' });
-      }
-
-      throw new Error(errorData.error?.message || '翻譯請求失敗');
-    }
-
-    const data = await response.json();
-
-    if (data.data?.translations?.[0]?.translatedText) {
-      const translation = data.data.translations[0];
-      const char_count = text.length;
-      const estimated_cost_usd = char_count * 0.00002;
-
-      // Record usage in SQLite (non-blocking -- errors must not break the response)
-      try {
-        insertTranslation.run({
-          source_lang: source || translation.detectedSourceLanguage,
-          target_lang: targetLanguage,
-          char_count,
-          estimated_cost_usd,
-        });
-      } catch (dbErr) {
-        console.error('DB insert error:', dbErr);
-      }
-
-      res.json({
-        success: true,
-        translation: translation.translatedText,
-        detectedSourceLanguage: translation.detectedSourceLanguage || source,
-        source: source || translation.detectedSourceLanguage,
-        target: targetLanguage,
+    try {
+      insertTranslation.run({
+        source_lang: source || result.detectedSourceLanguage,
+        target_lang: target,
         char_count,
         estimated_cost_usd,
-        timestamp: new Date().toISOString()
+        model_used: model,
       });
-    } else {
-      throw new Error('無法取得翻譯結果');
+    } catch (dbErr) {
+      console.error('DB insert error:', dbErr);
     }
 
+    res.json({
+      success: true,
+      translation: result.translation,
+      detectedSourceLanguage: result.detectedSourceLanguage,
+      source: source || result.detectedSourceLanguage,
+      target,
+      model,
+      char_count,
+      estimated_cost_usd,
+      timestamp: new Date().toISOString(),
+    });
   } catch (error) {
     console.error('翻譯錯誤:', error);
     res.status(500).json({
@@ -391,39 +513,79 @@ app.delete('/api/admins/:id', requireAuth, (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Settings endpoints (protected — admin can toggle active translation model)
+// ---------------------------------------------------------------------------
+app.get('/api/settings', requireAuth, (req, res) => {
+  const active_model = getActiveModel();
+  const gemini_configured = Boolean(process.env.GEMINI_API_KEY);
+  res.json({ active_model, gemini_configured, available_models: Array.from(VALID_MODELS) });
+});
+
+app.put('/api/settings', requireAuth, (req, res) => {
+  const { active_model } = req.body || {};
+  if (!VALID_MODELS.has(active_model)) {
+    return res.status(400).json({ error: `無效的翻譯引擎，可選: ${Array.from(VALID_MODELS).join(', ')}` });
+  }
+  if (active_model === 'premium' && !process.env.GEMINI_API_KEY) {
+    return res.status(400).json({ error: '高品質模式未設定 GEMINI_API_KEY，無法啟用' });
+  }
+  upsertSetting.run('active_model', active_model);
+  console.log(`⚙️  翻譯引擎切換為: ${active_model}（by ${req.admin.username}）`);
+  res.json({ active_model });
+});
+
+// ---------------------------------------------------------------------------
 // Usage tracking endpoints (protected)
 // ---------------------------------------------------------------------------
 
 // GET /api/usage/summary -- current month totals with free-tier adjustment
+// Free tier (500K chars/month, $0/char) only applies to the basic engine.
+// Premium (Gemini) is billed from the first character.
 app.get('/api/usage/summary', requireAuth, (req, res) => {
   try {
     const now = new Date();
     const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
     const monthPrefix = month + '%';
 
-    const row = db.prepare(`
+    const perModel = db.prepare(`
       SELECT
-        COALESCE(SUM(char_count), 0)          AS total_chars,
-        COALESCE(SUM(estimated_cost_usd), 0)  AS total_cost_estimated,
-        COUNT(*)                                AS total_requests
+        COALESCE(model_used, 'basic')         AS model,
+        COALESCE(SUM(char_count), 0)          AS chars,
+        COALESCE(SUM(estimated_cost_usd), 0)  AS cost,
+        COUNT(*)                                AS requests
       FROM translations
       WHERE timestamp LIKE @monthPrefix
-    `).get({ monthPrefix });
+      GROUP BY COALESCE(model_used, 'basic')
+    `).all({ monthPrefix });
 
-    const totalChars = row.total_chars;
-    const freeTierLimit = 500000;
-    const freeRemaining = Math.max(0, freeTierLimit - totalChars);
-    const actualCost = totalChars <= freeTierLimit
+    const by_model = { basic: { chars: 0, cost: 0, requests: 0 }, premium: { chars: 0, cost: 0, requests: 0 } };
+    for (const r of perModel) {
+      const key = by_model[r.model] ? r.model : 'basic';
+      by_model[key].chars    += r.chars;
+      by_model[key].cost     += r.cost;
+      by_model[key].requests += r.requests;
+    }
+
+    const totalChars     = by_model.basic.chars + by_model.premium.chars;
+    const totalCostEst   = by_model.basic.cost  + by_model.premium.cost;
+    const totalRequests  = by_model.basic.requests + by_model.premium.requests;
+
+    const freeTierLimit  = 500000; // applies only to basic
+    const basicChars     = by_model.basic.chars;
+    const freeRemaining  = Math.max(0, freeTierLimit - basicChars);
+    const basicActualCost = basicChars <= freeTierLimit
       ? 0
-      : (totalChars - freeTierLimit) * 0.00002;
+      : (basicChars - freeTierLimit) * MODEL_COSTS.basic;
+    const actualCost     = basicActualCost + by_model.premium.cost;
 
     res.json({
       total_chars: totalChars,
-      total_cost_estimated: row.total_cost_estimated,
+      total_cost_estimated: totalCostEst,
       actual_cost: actualCost,
-      total_requests: row.total_requests,
+      total_requests: totalRequests,
       free_remaining: freeRemaining,
       free_tier_limit: freeTierLimit,
+      by_model,
       month,
     });
   } catch (error) {
@@ -466,7 +628,8 @@ app.get('/api/usage/history', requireAuth, (req, res) => {
 app.get('/api/usage/recent', requireAuth, (req, res) => {
   try {
     const records = db.prepare(`
-      SELECT id, timestamp, source_lang, target_lang, char_count, estimated_cost_usd
+      SELECT id, timestamp, source_lang, target_lang, char_count, estimated_cost_usd,
+             COALESCE(model_used, 'basic') AS model_used
       FROM translations
       ORDER BY timestamp DESC
       LIMIT 50
@@ -507,7 +670,9 @@ app.use((err, req, res, next) => {
 app.listen(PORT, () => {
   console.log(`🚀 後端伺服器運行在 http://localhost:${PORT}`);
   console.log(`📝 環境: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔑 API Key 狀態: ${process.env.GOOGLE_TRANSLATE_API_KEY ? '已設定' : '未設定'}`);
+  console.log(`🔑 Google API Key: ${process.env.GOOGLE_TRANSLATE_API_KEY ? '已設定' : '未設定'}`);
+  console.log(`🔑 Gemini API Key: ${process.env.GEMINI_API_KEY ? '已設定' : '未設定（premium 模式不可用）'}`);
+  console.log(`⚙️  目前翻譯引擎: ${getActiveModel()}`);
   console.log(`📊 Usage DB: ${path.join(dataDir, 'usage.db')}`);
 });
 
