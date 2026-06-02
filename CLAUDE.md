@@ -24,9 +24,15 @@
 - **認證**：`bcryptjs` + `jsonwebtoken`（JWT Bearer Token，12h 過期）
 - **主檔**：`server/index.js`
 - **公開 API**：
-  - `POST /api/translate` — 翻譯（支援 source 留空自動偵測；驗證語言 code 白名單）
+  - `POST /api/translate` — 翻譯（支援 source 留空自動偵測；驗證語言 code 白名單；依後台設定分流到 basic / premium 引擎）
   - `GET  /api/languages` — 支援語言列表
   - `GET  /health` — 健康檢查
+- **翻譯引擎**：
+  - `basic`（預設）→ Google Cloud Translation v2
+  - `premium` → Gemini 2.5 Flash（需 `GEMINI_API_KEY`），準確度與 auto-detect 較佳
+  - 切換方式：後台「設定」→ 翻譯引擎，存於 `settings` table 的 `active_model`
+- **設定 API（需 auth）**：
+  - `GET /api/settings`、`PUT /api/settings`（body: `{ active_model: 'basic'|'premium' }`）
 - **認證 API**：
   - `POST /api/auth/login` — 帳號密碼登入，回傳 JWT（rate limit: 10 次/15 分）
   - `GET  /api/auth/me` — 取得當前管理員資訊（需 Bearer Token）
@@ -87,7 +93,8 @@ GOOGLE_TRANSLATE_API_KEY=...                 # 由 Docker compose 注入到 cont
 
 ### `server/.env`（本機後端執行用，範本見 `server/.env.example`）
 ```
-GOOGLE_TRANSLATE_API_KEY=...                 # production 缺失會直接 exit(1)
+GOOGLE_TRANSLATE_API_KEY=...                 # basic 模式必填，production 缺失會直接 exit(1)
+GEMINI_API_KEY=...                           # premium 模式必填，未設定時後台無法切到 premium
 PORT=3001
 NODE_ENV=development
 ALLOWED_ORIGINS=*                            # 以逗號分隔；預設 * 允許 iframe 嵌入
