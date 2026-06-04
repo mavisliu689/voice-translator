@@ -61,6 +61,21 @@ export function injectPulseStyleOnce(): void {
       50% { transform: scale(1.35); opacity: 0; }
     }
     .soft-pulse { animation: softPulse 2s ease-in-out infinite; }
+
+    /* Emanating "ripple" rings — classic recording indicator */
+    @keyframes recRing {
+      0%   { transform: scale(1);   opacity: 0.6; }
+      100% { transform: scale(2.1); opacity: 0;   }
+    }
+    .rec-ring { animation: recRing 1.5s cubic-bezier(0.2, 0.6, 0.4, 1) infinite; }
+    .rec-ring-delay { animation-delay: 0.75s; }
+
+    /* Blinking REC dot */
+    @keyframes recBlink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.2; }
+    }
+    .rec-blink { animation: recBlink 1s ease-in-out infinite; }
   `;
   document.head.appendChild(style);
 }

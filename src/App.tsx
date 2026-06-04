@@ -1100,31 +1100,47 @@ const VoiceTranslator = () => {
 
         {/* Mic button - centered floating */}
         <div className="flex justify-center flex-shrink-0 py-3 z-10 relative">
-          <button
-            onClick={toggleListening}
-            disabled={!isSupported}
-            className="w-16 h-16 rounded-full flex items-center justify-center shadow-lg transition-all focus:outline-none relative"
-            style={{
-              background: isListening ? '#c75050' : '#c8956c',
-              boxShadow: isListening
-                ? '0 4px 20px rgba(199,80,80,0.3)'
-                : '0 4px 20px rgba(200,149,108,0.3)',
-            }}
-            title={isListening ? 'Stop' : 'Start recording'}
-          >
-            {isListening ? (
-              <MicOff className="w-6 h-6 text-white" />
-            ) : (
-              <Mic className="w-6 h-6 text-white" />
-            )}
-            {/* Soft pulse ring when listening */}
+          <div className="relative flex items-center justify-center">
+            {/* Emanating ripple rings while recording — rendered BEHIND the button
+                (siblings, not children) so the animated, scaling overlay never sits
+                on top of the interactive button and steals taps/clicks. */}
             {isListening && (
-              <span
-                className="absolute w-16 h-16 rounded-full soft-pulse"
-                style={{ background: 'rgba(199,80,80,0.25)', pointerEvents: 'none' }}
-              />
+              <>
+                <span
+                  className="absolute inset-0 w-16 h-16 rounded-full rec-ring"
+                  style={{ background: 'rgba(199,80,80,0.35)', pointerEvents: 'none' }}
+                />
+                <span
+                  className="absolute inset-0 w-16 h-16 rounded-full rec-ring rec-ring-delay"
+                  style={{ background: 'rgba(199,80,80,0.25)', pointerEvents: 'none' }}
+                />
+              </>
             )}
-          </button>
+            <button
+              onClick={toggleListening}
+              disabled={!isSupported}
+              className="w-16 h-16 rounded-full flex items-center justify-center shadow-lg transition-all focus:outline-none relative z-10"
+              style={{
+                background: isListening ? '#c75050' : '#c8956c',
+                boxShadow: isListening
+                  ? '0 4px 24px rgba(199,80,80,0.45)'
+                  : '0 4px 20px rgba(200,149,108,0.3)',
+              }}
+              title={isListening ? '錄音中，輕觸停止 / Recording, tap to stop' : '輕觸開始 / Tap to start'}
+            >
+              {/* Keep the mic lit while recording (a crossed-out mic reads as "muted") */}
+              <Mic className="w-6 h-6 text-white relative z-10" />
+              {/* Blinking REC dot badge (opacity-only animation, no layout shift) */}
+              {isListening && (
+                <span
+                  className="absolute -top-0.5 -right-0.5 flex items-center justify-center rounded-full rec-blink z-20"
+                  style={{ width: 14, height: 14, background: '#fff', pointerEvents: 'none' }}
+                >
+                  <span style={{ width: 7, height: 7, borderRadius: '9999px', background: '#c75050' }} />
+                </span>
+              )}
+            </button>
+          </div>
         </div>
 
         {/* Live subtitle toggle */}
