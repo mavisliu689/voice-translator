@@ -24,6 +24,14 @@ fs.mkdirSync(dataDir, { recursive: true });
 
 const db = new Database(path.join(dataDir, 'usage.db'));
 db.pragma('journal_mode = WAL');
+// Durability for usage/billing records:
+// NORMAL is safe under WAL, and a small autocheckpoint threshold keeps the
+// -wal file from growing unbounded so committed rows land in the main .db
+// file promptly. A stale main .db plus a huge -wal is exactly how history
+// gets "wiped" — if that -wal is ever dropped, or the container is killed
+// ungracefully before a checkpoint, everything since the last checkpoint is lost.
+db.pragma('synchronous = NORMAL');
+db.pragma('wal_autocheckpoint = 100');
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS translations (
@@ -148,7 +156,7 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       ...helmet.contentSecurityPolicy.getDefaultDirectives(),
-      'frame-ancestors': ["'self'", 'https://www.tissa.tw', 'https://tissa.tw', 'https://www.cisanet.org.tw', 'https://cisanet.org.tw'],
+      'frame-ancestors': ["'self'", 'https://www.tissa.tw', 'https://tissa.tw', 'https://www.cisanet.org.tw', 'https://cisanet.org.tw', 'https://www.cisa.tw', 'https://cisa.tw'],
       // Setting to null removes these directives so browsers fall back to default-src 'self'.
       // (helmet defaults add `https:` to script-src/style-src, which we don't need for a bundled SPA.)
       'script-src': null,
@@ -186,18 +194,33 @@ app.use(morgan('combined'));
 app.use(express.json({ limit: '64kb' }));
 
 // Rate limiting
+// Always respond with JSON ({ error }) so the frontend can surface the real
+// reason — the default handler sends plain text, which the client's res.json()
+// fails to parse and then falls back to a generic "翻譯請求失敗".
+function rateLimitJson(message) {
+  return (req, res) => res.status(429).json({ error: message });
+}
+
+// NOTE: behind Docker's port-forward (and most reverse proxies without a
+// trusted X-Forwarded-For) every client appears as the same upstream IP, so
+// these limits are effectively shared across all users. Keep them generous
+// enough for legitimate continuous dictation by several concurrent users while
+// still capping abuse. For true per-user limits, put an HTTP reverse proxy in
+// front that sets X-Forwarded-For and enable Express `trust proxy`.
 const limiter = rateLimit({
   windowMs: 1 * 60 * 1000,
-  max: 30,
-  message: '請求過於頻繁，請稍後再試',
+  max: 200,
+  handler: rateLimitJson('請求過於頻繁，請稍後再試'),
   standardHeaders: true,
   legacyHeaders: false,
 });
 
 const translationLimiter = rateLimit({
   windowMs: 1 * 60 * 1000,
-  max: 20,
-  message: '翻譯請求過於頻繁，請稍後再試',
+  max: 120,
+  handler: rateLimitJson('翻譯請求過於頻繁，請稍候再試'),
+  standardHeaders: true,
+  legacyHeaders: false,
   skipSuccessfulRequests: false,
 });
 
@@ -447,7 +470,7 @@ app.get('/api/languages', (req, res) => {
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
-  message: '登入嘗試次數過多，請 15 分鐘後再試',
+  handler: rateLimitJson('登入嘗試次數過多，請 15 分鐘後再試'),
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -676,5 +699,20 @@ app.listen(PORT, () => {
   console.log(`📊 Usage DB: ${path.join(dataDir, 'usage.db')}`);
 });
 
-process.on('SIGTERM', () => { console.log('SIGTERM received'); db.close(); process.exit(0); });
-process.on('SIGINT', () => { console.log('SIGINT received'); db.close(); process.exit(0); });
+// Flush the WAL into the main .db file every 5 minutes so an ungraceful kill
+// (SIGKILL skips the graceful db.close() below) loses at most a few minutes of
+// usage/billing records instead of everything since the last checkpoint.
+const walCheckpointTimer = setInterval(() => {
+  try { db.pragma('wal_checkpoint(TRUNCATE)'); }
+  catch (err) { console.error('WAL checkpoint 失敗:', err); }
+}, 5 * 60 * 1000);
+walCheckpointTimer.unref();
+
+function shutdown(signal) {
+  console.log(`${signal} received`);
+  clearInterval(walCheckpointTimer);
+  db.close(); // checkpoints and truncates the WAL as the last connection closes
+  process.exit(0);
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

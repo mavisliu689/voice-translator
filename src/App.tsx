@@ -10,6 +10,7 @@ import {
 import {
   AUTH_TOKEN_KEY,
   AUTH_USERNAME_KEY,
+  ApiError,
   translate,
   login as apiLogin,
   makeAuthedFetch,
@@ -145,7 +146,10 @@ const VoiceTranslator = () => {
       return await translate(text, target, source);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('ECONNREFUSED')) setError('無法連接到翻譯服務');
+      // 429 = rate limited (often just talking fast); show the backend's gentle
+      // notice as-is rather than framing it as a hard "翻譯失敗".
+      if (err instanceof ApiError && err.status === 429) setError(msg);
+      else if (msg.includes('ECONNREFUSED')) setError('無法連接到翻譯服務');
       else if (msg.includes('Network')) setError('網路連線失敗');
       else setError(`翻譯失敗: ${msg}`);
       return null;
@@ -224,7 +228,11 @@ const VoiceTranslator = () => {
           setInterimTranslation(result.translation);
         }
       } catch { /* preview errors are non-fatal */ }
-    }, 500);
+      // 1100ms: only translate the live-subtitle preview on a real speech pause,
+      // not on every interim result — this is the main source of request volume
+      // for long sentences (esp. languages without ./。/?/！ sentence breaks like
+      // Thai), which is what trips the backend rate limit (429).
+    }, 1100);
   }, []);
 
   const toggleListening = async () => {
@@ -1086,12 +1094,6 @@ const VoiceTranslator = () => {
                     </button>
                   </div>
 
-                  {/* Cost info */}
-                  <div className="flex justify-end mt-3">
-                    <span className="text-xs" style={{ color: '#888888' }}>
-                      ~${(item.estimated_cost_usd ?? 0).toFixed(3)} &middot; {item.char_count ?? 0}字
-                    </span>
-                  </div>
                 </div>
               ))}
             </div>
