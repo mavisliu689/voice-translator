@@ -2,7 +2,7 @@
 FROM node:22-alpine AS frontend-builder
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci
+RUN npm install --no-audit --no-fund
 COPY . .
 ENV VITE_BACKEND_URL=""
 RUN npm run build
@@ -13,7 +13,7 @@ WORKDIR /app
 
 # Copy server
 COPY server/package*.json ./server/
-RUN cd server && npm ci --omit=dev
+RUN cd server && npm install --omit=dev --no-audit --no-fund
 
 COPY server/ ./server/
 

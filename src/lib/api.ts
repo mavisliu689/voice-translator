@@ -4,6 +4,16 @@ export const BACKEND_URL = (import.meta.env.VITE_BACKEND_URL ?? '') as string;
 export const AUTH_TOKEN_KEY = 'vt_admin_token';
 export const AUTH_USERNAME_KEY = 'vt_admin_username';
 
+/** Error carrying the HTTP status so callers can distinguish e.g. 429 rate-limiting from real failures. */
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
 // ─── Public: translation ───────────────────────────────────────────────────
 
 export async function translate(
@@ -22,7 +32,7 @@ export async function translate(
 
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({}) as { error?: string });
-    throw new Error(errorData.error || '翻譯請求失敗');
+    throw new ApiError(res.status, errorData.error || '翻譯請求失敗');
   }
 
   const data = await res.json();
