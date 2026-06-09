@@ -1,5 +1,7 @@
-# Dependencies
-node_modules
+# Dependencies (match nested too, e.g. server/node_modules — a bare
+# "node_modules" only matches the build-context root, which would let a
+# host-built server/node_modules clobber the Linux modules installed in-image)
+**/node_modules
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
