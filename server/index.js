@@ -3,7 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import helmet from 'helmet';
 import morgan from 'morgan';
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -201,27 +201,41 @@ function rateLimitJson(message) {
   return (req, res) => res.status(429).json({ error: message });
 }
 
-// NOTE: behind Docker's port-forward (and most reverse proxies without a
-// trusted X-Forwarded-For) every client appears as the same upstream IP, so
-// these limits are effectively shared across all users. Keep them generous
-// enough for legitimate continuous dictation by several concurrent users while
-// still capping abuse. For true per-user limits, put an HTTP reverse proxy in
-// front that sets X-Forwarded-For and enable Express `trust proxy`.
+// Per-user rate limiting key.
+// This service sits behind a Cloudflare Tunnel, so the socket source IP the
+// container sees is always the Docker gateway (limits would otherwise be shared
+// across ALL users). Cloudflare sets CF-Connecting-IP to the true visitor IP and
+// strips any client-supplied copy at its edge, so we key on it (normalised for
+// IPv6) to get genuine per-user limits. Falls back to the socket IP for direct/
+// local access without the header.
+// SECURITY: this is only spoof-proof while :5876 is reachable ONLY via the
+// Cloudflare Tunnel. Do not expose :5876 publicly, or a client could send a
+// forged CF-Connecting-IP to dodge the limit.
+const rateLimitKey = (req) => ipKeyGenerator(req.headers['cf-connecting-ip'] || req.ip || 'unknown');
+
+// We intentionally read CF-Connecting-IP instead of enabling a permissive
+// `trust proxy`, so silence the X-Forwarded-For trust-proxy validation warning.
+const rateLimitValidate = { xForwardedForHeader: false };
+
 const limiter = rateLimit({
   windowMs: 1 * 60 * 1000,
-  max: 200,
+  max: 120,
+  keyGenerator: rateLimitKey,
   handler: rateLimitJson('請求過於頻繁，請稍後再試'),
   standardHeaders: true,
   legacyHeaders: false,
+  validate: rateLimitValidate,
 });
 
 const translationLimiter = rateLimit({
   windowMs: 1 * 60 * 1000,
-  max: 120,
+  max: 60,
+  keyGenerator: rateLimitKey,
   handler: rateLimitJson('翻譯請求過於頻繁，請稍候再試'),
   standardHeaders: true,
   legacyHeaders: false,
   skipSuccessfulRequests: false,
+  validate: rateLimitValidate,
 });
 
 app.use('/api', limiter);
@@ -470,9 +484,11 @@ app.get('/api/languages', (req, res) => {
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
+  keyGenerator: rateLimitKey,
   handler: rateLimitJson('登入嘗試次數過多，請 15 分鐘後再試'),
   standardHeaders: true,
   legacyHeaders: false,
+  validate: rateLimitValidate,
 });
 
 app.post('/api/auth/login', loginLimiter, (req, res) => {
