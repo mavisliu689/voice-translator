@@ -14,6 +14,8 @@ services:
       - PORT=3001
       # 從 .env 檔案讀取 API Key（安全方式）
       - GOOGLE_TRANSLATE_API_KEY=${GOOGLE_TRANSLATE_API_KEY}
+      # 高品質（premium 文字）與 Live 即時語音翻譯需要此 key
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
       - FRONTEND_URL=http://localhost:8080
     restart: unless-stopped
     networks:
