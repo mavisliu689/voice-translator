@@ -7,9 +7,12 @@ import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import http from 'http';
 import Database from 'better-sqlite3';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import { attachLiveTranslate } from './liveTranslate.js';
+import { toTraditional } from './zhConvert.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -66,6 +69,13 @@ if (!translationCols.some(c => c.name === 'model_used')) {
 // Bootstrap default active_model setting if not present
 db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('active_model', 'basic')`).run();
 
+// Live Translate (Gemini 3.5 Live) — admin kill switch + monthly spend cap.
+// Defaults OFF: Live is billed per audio-minute and exposed to public embed
+// visitors, so an admin must explicitly enable it in the back office. The cap
+// auto-locks Live once this calendar month's Live cost reaches it.
+db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('live_translate_enabled', 'false')`).run();
+db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('live_cost_cap_usd', '100')`).run();
+
 // Prepare statements for performance
 const insertTranslation = db.prepare(`
   INSERT INTO translations (source_lang, target_lang, char_count, estimated_cost_usd, model_used)
@@ -86,6 +96,51 @@ function getActiveModel() {
   const value = row?.value;
   return VALID_MODELS.has(value) ? value : 'basic';
 }
+
+// --- Live Translate availability: manual switch + monthly spend cap ---------
+function getLiveCostCap() {
+  const v = parseFloat(getSetting.get('live_cost_cap_usd')?.value);
+  return Number.isFinite(v) && v >= 0 ? v : 100;
+}
+
+const getLiveMonthCostStmt = db.prepare(`
+  SELECT COALESCE(SUM(estimated_cost_usd), 0) AS cost
+  FROM translations
+  WHERE COALESCE(model_used, 'basic') = 'live' AND timestamp LIKE ?
+`);
+function getLiveMonthCost() {
+  const now = new Date();
+  const monthPrefix = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}%`;
+  return getLiveMonthCostStmt.get(monthPrefix)?.cost || 0;
+}
+
+// Live bridge handle (set once attachLiveTranslate runs at startup). Lets the
+// cap check see in-flight cost, and lets settings/shutdown kill active sessions.
+let liveHandle = null;
+const getInFlightLiveCost = () => (liveHandle ? liveHandle.getInFlightCostUsd() : 0);
+
+// Live is available only when: key present, admin switch on, and this month's
+// Live spend (committed + in-flight) is still under the cap. Returns a reason when
+// locked so the client can show exactly why (manual off vs. cost cap reached).
+// Including in-flight cost is what stops many concurrent sessions from each
+// slipping under a cap that only sees already-committed usage.
+function getLiveStatus() {
+  if (!process.env.GEMINI_API_KEY) return { enabled: false, reason: '高品質翻譯服務未設定' };
+  if (getSetting.get('live_translate_enabled')?.value === 'false') {
+    return { enabled: false, reason: '高品質翻譯已由管理員關閉' };
+  }
+  const cap = getLiveCostCap();
+  if (cap > 0 && (getLiveMonthCost() + getInFlightLiveCost()) >= cap) {
+    return { enabled: false, reason: `已達本月成本上限（$${cap}），高品質翻譯已自動鎖定` };
+  }
+  return { enabled: true };
+}
+
+// Live Translate is billed per audio-minute; log each session as model 'live'.
+const insertLiveUsage = db.prepare(`
+  INSERT INTO translations (source_lang, target_lang, char_count, estimated_cost_usd, model_used)
+  VALUES ('auto', @target, @chars, @costUsd, 'live')
+`);
 
 // ---------------------------------------------------------------------------
 // Auth: bootstrap initial admin, JWT helpers, auth middleware
@@ -381,9 +436,11 @@ ${text}
 // Per-model cost estimate ($/char). Gemini Flash is billed by token but
 // char-rate is a stable proxy for usage tracking — Chinese ~1 token/char,
 // Latin ~0.25 token/char; we use a conservative blended rate.
+// Customer-facing prices per char (100× markup over raw provider cost, matching
+// the Live engine). Raw: Google v2 ~$0.00002/char, Gemini ~$0.000004/char.
 const MODEL_COSTS = {
-  basic:   0.00002,    // Google Translate v2 standard tier
-  premium: 0.000004,   // Gemini 2.5 Flash estimate (rough; per-token in reality)
+  basic:   0.00002 * 100,    // $0.002/char  (Google Translate v2, marked up)
+  premium: 0.000004 * 100,   // $0.0004/char (Gemini 2.5 Flash, marked up)
 };
 
 // Translation API - dispatches to active model
@@ -419,6 +476,12 @@ app.post('/api/translate', translationLimiter, async (req, res) => {
       throw err;
     }
 
+    // Enforce Traditional Chinese — never surface Simplified for a zh-TW target,
+    // even if the upstream engine slips (the app is Traditional-only).
+    if (target === 'zh-TW' && result.translation) {
+      result.translation = toTraditional(result.translation);
+    }
+
     const char_count = text.length;
     const estimated_cost_usd = char_count * (MODEL_COSTS[model] ?? MODEL_COSTS.basic);
 
@@ -452,6 +515,13 @@ app.post('/api/translate', translationLimiter, async (req, res) => {
       message: process.env.NODE_ENV === 'development' ? error.message : '請稍後再試'
     });
   }
+});
+
+// Public Live Translate availability — the embed/translate UI (no auth) needs
+// to know whether to offer the "高品質" toggle, and why it's locked if so.
+app.get('/api/live/status', (req, res) => {
+  const status = getLiveStatus();
+  res.json({ available: status.enabled, reason: status.enabled ? null : status.reason });
 });
 
 // Languages endpoint
@@ -557,20 +627,67 @@ app.delete('/api/admins/:id', requireAuth, (req, res) => {
 app.get('/api/settings', requireAuth, (req, res) => {
   const active_model = getActiveModel();
   const gemini_configured = Boolean(process.env.GEMINI_API_KEY);
-  res.json({ active_model, gemini_configured, available_models: Array.from(VALID_MODELS) });
+  const liveStatus = getLiveStatus();
+  res.json({
+    active_model,
+    gemini_configured,
+    available_models: Array.from(VALID_MODELS),
+    // Live Translate (Gemini 3.5 Live) controls
+    live_translate_enabled: getSetting.get('live_translate_enabled')?.value !== 'false',
+    live_cost_cap_usd: getLiveCostCap(),
+    live_month_cost_usd: getLiveMonthCost(),
+    live_available: liveStatus.enabled,
+    live_locked_reason: liveStatus.enabled ? null : liveStatus.reason,
+  });
 });
 
 app.put('/api/settings', requireAuth, (req, res) => {
-  const { active_model } = req.body || {};
-  if (!VALID_MODELS.has(active_model)) {
-    return res.status(400).json({ error: `無效的翻譯引擎，可選: ${Array.from(VALID_MODELS).join(', ')}` });
+  const body = req.body || {};
+  const updates = {};
+
+  // Text translation engine (basic / premium) — unchanged behaviour
+  if (body.active_model !== undefined) {
+    if (!VALID_MODELS.has(body.active_model)) {
+      return res.status(400).json({ error: `無效的翻譯引擎，可選: ${Array.from(VALID_MODELS).join(', ')}` });
+    }
+    if (body.active_model === 'premium' && !process.env.GEMINI_API_KEY) {
+      return res.status(400).json({ error: '高品質模式未設定 GEMINI_API_KEY，無法啟用' });
+    }
+    upsertSetting.run('active_model', body.active_model);
+    updates.active_model = body.active_model;
   }
-  if (active_model === 'premium' && !process.env.GEMINI_API_KEY) {
-    return res.status(400).json({ error: '高品質模式未設定 GEMINI_API_KEY，無法啟用' });
+
+  // Live Translate manual kill switch
+  if (body.live_translate_enabled !== undefined) {
+    const val = body.live_translate_enabled ? 'true' : 'false';
+    upsertSetting.run('live_translate_enabled', val);
+    updates.live_translate_enabled = val === 'true';
   }
-  upsertSetting.run('active_model', active_model);
-  console.log(`⚙️  翻譯引擎切換為: ${active_model}（by ${req.admin.username}）`);
-  res.json({ active_model });
+
+  // Live Translate monthly spend cap (USD); 0 disables the cap
+  if (body.live_cost_cap_usd !== undefined) {
+    const cap = Number(body.live_cost_cap_usd);
+    if (!Number.isFinite(cap) || cap < 0) {
+      return res.status(400).json({ error: '成本上限需為 0 或正數' });
+    }
+    upsertSetting.run('live_cost_cap_usd', String(cap));
+    updates.live_cost_cap_usd = cap;
+  }
+
+  if (Object.keys(updates).length === 0) {
+    return res.status(400).json({ error: '沒有可更新的設定' });
+  }
+
+  // If a Live setting change just locked Live (kill switch off, or cap lowered
+  // below current spend), immediately end any in-progress sessions — "後台直接鎖住"
+  // must stop billing now, not wait for each session's 10-minute timer.
+  if (body.live_translate_enabled !== undefined || body.live_cost_cap_usd !== undefined) {
+    const liveStatus = getLiveStatus();
+    if (!liveStatus.enabled) liveHandle?.closeAllLiveSessions(liveStatus.reason);
+  }
+
+  console.log(`⚙️  設定更新（by ${req.admin.username}）:`, updates);
+  res.json(updates);
 });
 
 // ---------------------------------------------------------------------------
@@ -597,7 +714,11 @@ app.get('/api/usage/summary', requireAuth, (req, res) => {
       GROUP BY COALESCE(model_used, 'basic')
     `).all({ monthPrefix });
 
-    const by_model = { basic: { chars: 0, cost: 0, requests: 0 }, premium: { chars: 0, cost: 0, requests: 0 } };
+    const by_model = {
+      basic:   { chars: 0, cost: 0, requests: 0 },
+      premium: { chars: 0, cost: 0, requests: 0 },
+      live:    { chars: 0, cost: 0, requests: 0 },
+    };
     for (const r of perModel) {
       const key = by_model[r.model] ? r.model : 'basic';
       by_model[key].chars    += r.chars;
@@ -605,9 +726,9 @@ app.get('/api/usage/summary', requireAuth, (req, res) => {
       by_model[key].requests += r.requests;
     }
 
-    const totalChars     = by_model.basic.chars + by_model.premium.chars;
-    const totalCostEst   = by_model.basic.cost  + by_model.premium.cost;
-    const totalRequests  = by_model.basic.requests + by_model.premium.requests;
+    const totalChars     = by_model.basic.chars + by_model.premium.chars + by_model.live.chars;
+    const totalCostEst   = by_model.basic.cost  + by_model.premium.cost  + by_model.live.cost;
+    const totalRequests  = by_model.basic.requests + by_model.premium.requests + by_model.live.requests;
 
     const freeTierLimit  = 500000; // applies only to basic
     const basicChars     = by_model.basic.chars;
@@ -615,7 +736,8 @@ app.get('/api/usage/summary', requireAuth, (req, res) => {
     const basicActualCost = basicChars <= freeTierLimit
       ? 0
       : (basicChars - freeTierLimit) * MODEL_COSTS.basic;
-    const actualCost     = basicActualCost + by_model.premium.cost;
+    // Premium (Gemini text) and Live (Gemini audio, per-minute) are billed from $0.
+    const actualCost     = basicActualCost + by_model.premium.cost + by_model.live.cost;
 
     res.json({
       total_chars: totalChars,
@@ -706,12 +828,27 @@ app.use((err, req, res, next) => {
   });
 });
 
-app.listen(PORT, () => {
+// HTTP server wraps Express so we can also host the Live Translate WebSocket
+// on the same port (required for the single-image / Cloudflare-tunnel deploy).
+const server = http.createServer(app);
+
+liveHandle = attachLiveTranslate(server, {
+  supportedLangs: SUPPORTED_LANGS,
+  allowedOrigins,
+  getLiveStatus,
+  logUsage: ({ target, chars, costUsd }) => {
+    try { insertLiveUsage.run({ target, chars, costUsd }); }
+    catch (e) { console.error('Live usage insert error:', e); }
+  },
+});
+
+server.listen(PORT, () => {
   console.log(`🚀 後端伺服器運行在 http://localhost:${PORT}`);
   console.log(`📝 環境: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🔑 Google API Key: ${process.env.GOOGLE_TRANSLATE_API_KEY ? '已設定' : '未設定'}`);
-  console.log(`🔑 Gemini API Key: ${process.env.GEMINI_API_KEY ? '已設定' : '未設定（premium 模式不可用）'}`);
+  console.log(`🔑 Gemini API Key: ${process.env.GEMINI_API_KEY ? '已設定' : '未設定（premium / Live 模式不可用）'}`);
   console.log(`⚙️  目前翻譯引擎: ${getActiveModel()}`);
+  console.log(`🎙️  Live Translate: ${getLiveStatus().enabled ? '可用' : '停用（' + getLiveStatus().reason + '）'}（月上限 $${getLiveCostCap()}）`);
   console.log(`📊 Usage DB: ${path.join(dataDir, 'usage.db')}`);
 });
 
@@ -727,6 +864,10 @@ walCheckpointTimer.unref();
 function shutdown(signal) {
   console.log(`${signal} received`);
   clearInterval(walCheckpointTimer);
+  // End in-progress Live sessions first — teardown() bills their elapsed minutes
+  // synchronously, so usage lands in the DB before we close it (otherwise every
+  // restart silently loses in-flight Live cost and under-counts the cap).
+  try { liveHandle?.closeAllLiveSessions('伺服器即將重啟'); } catch (e) { console.error('closeAll error:', e); }
   db.close(); // checkpoints and truncates the WAL as the last connection closes
   process.exit(0);
 }
