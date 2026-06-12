@@ -47,6 +47,34 @@ export async function translate(
   };
 }
 
+// ─── Live Translate (Gemini 3.5 Live) ───────────────────────────────────────
+
+export interface LiveStatus {
+  available: boolean;
+  reason: string | null;
+}
+
+/** Public endpoint — whether the high-quality Live mode can be offered. */
+export async function fetchLiveStatus(): Promise<LiveStatus> {
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/live/status`);
+    if (!res.ok) return { available: false, reason: null };
+    return (await res.json()) as LiveStatus;
+  } catch {
+    return { available: false, reason: null };
+  }
+}
+
+/** Resolve the WebSocket base URL for the Live bridge from BACKEND_URL.
+ *  Dev: VITE_BACKEND_URL=http://localhost:3001 → ws://localhost:3001
+ *  Prod (same-origin, BACKEND_URL=''): ws(s)://<page host> */
+export function liveWsUrl(target: string): string {
+  const base = BACKEND_URL
+    ? BACKEND_URL.replace(/^http/, 'ws')
+    : `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
+  return `${base}/ws/live-translate?target=${encodeURIComponent(target)}`;
+}
+
 // ─── Auth ──────────────────────────────────────────────────────────────────
 
 export interface LoginResponse {
@@ -144,6 +172,17 @@ export interface AppSettings {
   active_model: TranslationModel;
   gemini_configured: boolean;
   available_models: TranslationModel[];
+  // Live Translate (Gemini 3.5 Live) controls
+  live_translate_enabled: boolean;
+  live_cost_cap_usd: number;
+  live_month_cost_usd: number;
+  live_available: boolean;
+  live_locked_reason: string | null;
+}
+
+export interface LiveSettingsUpdate {
+  live_translate_enabled?: boolean;
+  live_cost_cap_usd?: number;
 }
 
 export async function fetchSettings(
@@ -161,6 +200,21 @@ export async function updateSettings(
   const res = await authedFetch(`${BACKEND_URL}/api/settings`, {
     method: 'PUT',
     body: JSON.stringify({ active_model }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || '儲存失敗');
+  }
+}
+
+/** Update Live Translate controls (kill switch / monthly cost cap). */
+export async function updateLiveSettings(
+  authedFetch: (u: string, i?: RequestInit) => Promise<Response>,
+  update: LiveSettingsUpdate,
+): Promise<void> {
+  const res = await authedFetch(`${BACKEND_URL}/api/settings`, {
+    method: 'PUT',
+    body: JSON.stringify(update),
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));

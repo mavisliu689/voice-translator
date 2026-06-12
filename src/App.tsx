@@ -21,8 +21,11 @@ import {
   deleteAdmin,
   fetchSettings,
   updateSettings,
+  fetchLiveStatus,
+  updateLiveSettings,
   type AppSettings,
   type TranslationModel,
+  type LiveSettingsUpdate,
 } from './lib/api';
 import {
   useIsEmbed,
@@ -31,6 +34,7 @@ import {
   postTranslationResultToParent,
   injectPulseStyleOnce,
 } from './hooks/useEmbedMode';
+import { useLiveTranslate, type LiveStatus, type LiveAudioSource } from './hooks/useLiveTranslate';
 import type { TranslationHistoryItem, Admin, UsageSummary, UsageRecord } from './types';
 
 injectPulseStyleOnce();
@@ -65,6 +69,7 @@ const VoiceTranslator = () => {
   const sourceLangRef = useRef(sourceLang);
   const liveSubtitleRef = useRef(liveSubtitle);
   const currentSentenceRef = useRef('');
+  const stopListeningRef = useRef<(() => void) | null>(null);
 
   // Embed-specific state
   const [embedView, setEmbedView] = useState<'translate' | 'usage'>('translate');
@@ -89,6 +94,14 @@ const VoiceTranslator = () => {
   const [settingsError, setSettingsError] = useState('');
   const [settingsNotice, setSettingsNotice] = useState('');
 
+  // Live Translate (Gemini 3.5 Live) — high-quality realtime mode
+  const [liveMode, setLiveMode] = useState(false);
+  const [liveAvailable, setLiveAvailable] = useState(false);
+  const [liveStatus, setLiveStatus] = useState<LiveStatus>('idle');
+  const [liveAudioSource, setLiveAudioSource] = useState<LiveAudioSource>('mic');
+  const [liveCapDraft, setLiveCapDraft] = useState(''); // admin cost-cap input draft
+  const liveBusyRef = useRef(false); // true while a Live session is connecting/active
+
   // Keep refs in sync
   useEffect(() => { isListeningRef.current = isListening; }, [isListening]);
   useEffect(() => { targetLangRef.current = targetLang; }, [targetLang]);
@@ -97,7 +110,11 @@ const VoiceTranslator = () => {
   useEffect(() => { currentSentenceRef.current = currentSentence; }, [currentSentence]);
 
   useLockBodyScroll(isEmbed);
-  useParentMessages({ onSetTargetLang: setTargetLang });
+  // Ignore parent-driven target changes while a Live session is running — the
+  // session's target is fixed at connect time, so a mid-session change would
+  // silently produce wrong-language output. (Reads liveBusyRef rather than
+  // liveStatus so the guard is always current regardless of when it re-binds.)
+  useParentMessages({ onSetTargetLang: (lang) => { if (!liveBusyRef.current) setTargetLang(lang); } });
 
   useEffect(() => {
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
@@ -213,6 +230,76 @@ const VoiceTranslator = () => {
     }
   }, []);
 
+  // ── Live Translate (Gemini 3.5 Live) ──────────────────────────────────────
+  // Commit a finalized Live utterance straight to history (translation already
+  // came back from the model — no extra /api/translate call needed).
+  const addLiveItemToHistory = useCallback((source: string, translation: string, target: string) => {
+    if (!source && !translation) return;
+    const item = {
+      id: Date.now(),
+      source,
+      translation,
+      detectedLang: 'auto',
+      targetLang: target, // the language THIS session translated into (not the live ref)
+      timestamp: new Date().toISOString(),
+      char_count: 0,
+      estimated_cost_usd: 0,
+    };
+    // turnComplete is the authoritative utterance boundary — no content de-dup,
+    // which would wrongly drop legitimate repeats like 「好」「謝謝」.
+    setTranslationHistory(prev => [item, ...prev].slice(0, 20));
+    postTranslationResultToParent(item);
+  }, []);
+
+  const { start: liveStart, stop: liveStop } = useLiveTranslate({
+    onPartial: (s, t) => { setCurrentSentence(s); setInterimTranslation(t); },
+    onCommit: (s, t, target) => { addLiveItemToHistory(s, t, target); setCurrentSentence(''); setInterimTranslation(''); },
+    onError: (m) => setError(m),
+    onStatus: (st) => setLiveStatus(st),
+  });
+
+  // Fetch public Live availability once (the embed has no auth but still needs
+  // to know whether to offer the mode, and why it's locked if so).
+  useEffect(() => {
+    fetchLiveStatus().then(s => setLiveAvailable(s.available));
+  }, []);
+
+  // Keep liveBusyRef in sync for the parent-message guard above.
+  useEffect(() => { liveBusyRef.current = liveStatus === 'live' || liveStatus === 'connecting'; }, [liveStatus]);
+
+  // Keep the admin cost-cap input in sync with loaded settings.
+  useEffect(() => {
+    if (appSettings) setLiveCapDraft(String(appSettings.live_cost_cap_usd ?? 100));
+  }, [appSettings]);
+
+  const toggleLive = useCallback(async () => {
+    if (liveStatus === 'connecting' || liveStatus === 'live') { liveStop(); return; }
+    if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
+      setError('高品質翻譯需要在 HTTPS 網站上使用。');
+      return;
+    }
+    // Re-check availability at click time — admin may have hit the kill switch or
+    // the monthly cap may have locked Live since the page loaded.
+    const st = await fetchLiveStatus();
+    if (!st.available) {
+      setLiveAvailable(false);
+      setError(st.reason || '高品質翻譯目前無法使用。');
+      return;
+    }
+    setError(''); setCurrentSentence(''); setInterimText(''); setInterimTranslation('');
+    await liveStart(targetLang, liveAudioSource, true);
+  }, [liveStart, liveStop, liveStatus, targetLang, liveAudioSource]);
+
+  // Switch between free (Web Speech) and high-quality (Live) modes, stopping
+  // whatever is currently running first.
+  const switchLiveMode = useCallback((toLive: boolean) => {
+    if (liveMode === toLive) return;
+    if (isListeningRef.current) stopListeningRef.current?.();
+    if (liveStatus === 'live' || liveStatus === 'connecting') liveStop();
+    setCurrentSentence(''); setInterimText(''); setInterimTranslation(''); setError('');
+    setLiveMode(toLive);
+  }, [liveMode, liveStatus, liveStop]);
+
   // Debounced live-subtitle preview: translate the in-progress (interim) speech
   // so users see the translation update as they speak, before the sentence finalizes.
   const scheduleInterimTranslation = useCallback((text: string) => {
@@ -260,6 +347,12 @@ const VoiceTranslator = () => {
         return;
       }
       if (recognitionRef.current) {
+        // Detach handlers before stopping the old instance, otherwise its onend
+        // fires the auto-restart path and races with the new instance we build
+        // below (e.g. when rebuilding to apply a source-language change).
+        recognitionRef.current.onend = null;
+        recognitionRef.current.onerror = null;
+        recognitionRef.current.onresult = null;
         try { recognitionRef.current.stop(); } catch { /* */ }
         recognitionRef.current = null;
       }
@@ -398,6 +491,23 @@ const VoiceTranslator = () => {
       recognitionRef.current = null;
     }
   };
+
+  // Keep the latest stopListening in a ref so mode-switch logic can stop an
+  // in-progress Web Speech session without ordering/closure hazards.
+  useEffect(() => { stopListeningRef.current = stopListening; });
+
+  // recognition.lang is baked in at construction (Web Speech API can't switch
+  // languages on a live instance), so a source-language change mid-session is
+  // silently ignored — the running recognizer keeps decoding with the OLD
+  // language (e.g. still "listening in Chinese" after the user picks Thai).
+  // Rebuild the recognizer so the new language hint actually takes effect.
+  const prevSourceLangRef = useRef(sourceLang);
+  useEffect(() => {
+    if (prevSourceLangRef.current === sourceLang) return;
+    prevSourceLangRef.current = sourceLang;
+    if (isListeningRef.current) startListening();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceLang]);
 
   const speakText = (text: string, lang: string) => {
     if ('speechSynthesis' in window) {
@@ -552,6 +662,29 @@ const VoiceTranslator = () => {
     else if (usageSubView === 'admins') fetchAdmins();
     else if (usageSubView === 'settings') loadSettings();
   }, [embedView, authToken, usageSubView, fetchUsageData, fetchAdmins, loadSettings]);
+
+  const handleSaveLiveSettings = useCallback(async (update: LiveSettingsUpdate) => {
+    setSettingsBusy(true); setSettingsError(''); setSettingsNotice('');
+    try {
+      await updateLiveSettings(authedFetch, update);
+      setSettingsNotice('已更新即時翻譯設定');
+      window.setTimeout(() => setSettingsNotice(''), 2500);
+      await loadSettings();
+    } catch (err) {
+      setSettingsError(err instanceof Error ? err.message : '儲存失敗');
+    } finally {
+      setSettingsBusy(false);
+    }
+  }, [authedFetch, loadSettings]);
+
+  // Unified "recording" state + mic handler across free (Web Speech) and Live modes.
+  const recActive = liveMode ? (liveStatus === 'connecting' || liveStatus === 'live') : isListening;
+  const liveBusy = liveStatus === 'connecting' || liveStatus === 'live';
+  // While a Live session runs its target language is fixed at connect time, so lock
+  // the target picker; the source is auto-detected in Live mode, so lock that too.
+  const lockTarget = liveBusy;
+  const lockSource = liveMode;
+  const onMicClick = () => { if (liveMode) toggleLive(); else toggleListening(); };
 
   // ── EMBED MODE UI ────────────────────────────────────────────────────────────
   if (isEmbed) {
@@ -743,16 +876,16 @@ const VoiceTranslator = () => {
         }> = [
           {
             key: 'basic',
-            title: '標準（Google Translate）',
+            title: import.meta.env.DEV ? '標準（Google Translate）' : '標準',
             desc: '速度快、每月前 50 萬字免費。適合一般使用。',
-            cost: '$0.00002 / 字元（超過免費額度後）',
+            cost: '$0.002 / 字元（超過免費額度後）',
             Icon: Zap,
           },
           {
             key: 'premium',
-            title: '高品質（Gemini 2.5 Flash）',
+            title: import.meta.env.DEV ? '高品質（Gemini 2.5 Flash）' : '高品質',
             desc: '準確度與自動偵測語言較佳，回應略慢約 0.5–1 秒。',
-            cost: '約 $0.000004 / 字元（依 token 計費，無免費額度）',
+            cost: '約 $0.0004 / 字元（依 token 計費，無免費額度）',
             Icon: Sparkles,
             disabled: !geminiReady,
             disabledReason: '伺服器尚未設定 GEMINI_API_KEY',
@@ -822,6 +955,71 @@ const VoiceTranslator = () => {
 
               <div className="mt-6 px-4 py-3 rounded-xl text-xs" style={{ background: '#fef9ef', color: '#8a6a3a', border: '1px solid #f0d9b5' }}>
                 提示：切換後立即生效，所有訪客（包含 iframe 嵌入站點）會使用新引擎。可在「用量」分頁查看各引擎的字元數與成本。
+              </div>
+
+              {/* ── 高品質翻譯（Gemini 3.5 Live）控制 ── */}
+              <div className="mt-8">
+                <p className="text-xs tracking-widest uppercase mb-4" style={{ color: '#888888', letterSpacing: '0.15em' }}>高品質翻譯（Live）</p>
+                <div className="rounded-2xl p-5 space-y-4" style={{ background: '#ffffff', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+                  {/* Kill switch */}
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm" style={{ color: '#2d2d2d' }}>啟用即時語音翻譯</p>
+                      <p className="text-xs mt-0.5" style={{ color: '#888888' }}>關閉後所有訪客將無法使用高品質模式</p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={settingsBusy || !appSettings?.gemini_configured}
+                      onClick={() => handleSaveLiveSettings({ live_translate_enabled: !appSettings?.live_translate_enabled })}
+                      className="relative w-12 h-7 rounded-full transition-colors flex-shrink-0 disabled:opacity-40"
+                      style={{ background: appSettings?.live_translate_enabled ? '#c8956c' : '#e8e4df' }}
+                      title={appSettings?.gemini_configured ? '' : '伺服器未設定 GEMINI_API_KEY'}
+                    >
+                      <span className="absolute top-1 w-5 h-5 rounded-full bg-white transition-all" style={{ left: appSettings?.live_translate_enabled ? 24 : 4 }} />
+                    </button>
+                  </div>
+
+                  {/* Monthly cost cap */}
+                  <div className="pt-3" style={{ borderTop: '1px solid #f0ede8' }}>
+                    <p className="text-sm mb-1" style={{ color: '#2d2d2d' }}>每月成本上限（USD）</p>
+                    <p className="text-xs mb-2" style={{ color: '#888888' }}>本月 Live 花費達上限時自動鎖定，0 表示不限制</p>
+                    <div className="flex items-center gap-2">
+                      <span style={{ color: '#888888' }}>$</span>
+                      <input
+                        type="number" min="0" step="1"
+                        value={liveCapDraft}
+                        onChange={(e) => setLiveCapDraft(e.target.value)}
+                        className="w-28 px-3 py-2 rounded-xl text-base outline-none"
+                        style={{ background: '#faf9f6', border: '1px solid #e8e4df', color: '#2d2d2d' }}
+                      />
+                      <button
+                        type="button"
+                        disabled={settingsBusy || liveCapDraft === '' || Number(liveCapDraft) === appSettings?.live_cost_cap_usd}
+                        onClick={() => handleSaveLiveSettings({ live_cost_cap_usd: Number(liveCapDraft) })}
+                        className="px-4 py-2 rounded-xl text-sm font-medium transition-colors disabled:opacity-50"
+                        style={{ background: '#c8956c', color: '#fff' }}
+                      >儲存</button>
+                    </div>
+                  </div>
+
+                  {/* This month's Live spend */}
+                  <div className="pt-3 flex items-center justify-between" style={{ borderTop: '1px solid #f0ede8' }}>
+                    <span className="text-xs" style={{ color: '#888888' }}>本月 Live 花費</span>
+                    <span className="text-sm" style={{ color: '#2d2d2d' }}>
+                      ${(appSettings?.live_month_cost_usd ?? 0).toFixed(2)}
+                      <span className="text-xs ml-1" style={{ color: '#888888' }}>/ ${appSettings?.live_cost_cap_usd ?? 0}</span>
+                    </span>
+                  </div>
+
+                  {appSettings && !appSettings.live_available && appSettings.live_locked_reason && (
+                    <div className="px-3 py-2 rounded-xl text-xs" style={{ background: '#fef2f2', color: '#c75050', border: '1px solid #fecaca' }}>
+                      {appSettings.live_locked_reason}
+                    </div>
+                  )}
+                </div>
+                <div className="mt-3 px-4 py-3 rounded-xl text-xs" style={{ background: '#fef9ef', color: '#8a6a3a', border: '1px solid #f0d9b5' }}>
+                  Live 按音訊分鐘計費（$2.3/分鐘），公開嵌入站點也會使用。達月上限會自動鎖定，可隨時用上方開關手動停用。
+                </div>
               </div>
             </div>
           </div>
@@ -1106,7 +1304,7 @@ const VoiceTranslator = () => {
             {/* Emanating ripple rings while recording — rendered BEHIND the button
                 (siblings, not children) so the animated, scaling overlay never sits
                 on top of the interactive button and steals taps/clicks. */}
-            {isListening && (
+            {recActive && (
               <>
                 <span
                   className="absolute inset-0 w-16 h-16 rounded-full rec-ring"
@@ -1119,21 +1317,21 @@ const VoiceTranslator = () => {
               </>
             )}
             <button
-              onClick={toggleListening}
-              disabled={!isSupported}
+              onClick={onMicClick}
+              disabled={!liveMode && !isSupported}
               className="w-16 h-16 rounded-full flex items-center justify-center shadow-lg transition-all focus:outline-none relative z-10"
               style={{
-                background: isListening ? '#c75050' : '#c8956c',
-                boxShadow: isListening
+                background: recActive ? '#c75050' : '#c8956c',
+                boxShadow: recActive
                   ? '0 4px 24px rgba(199,80,80,0.45)'
                   : '0 4px 20px rgba(200,149,108,0.3)',
               }}
-              title={isListening ? '錄音中，輕觸停止 / Recording, tap to stop' : '輕觸開始 / Tap to start'}
+              title={recActive ? '錄音中，輕觸停止 / Recording, tap to stop' : '輕觸開始 / Tap to start'}
             >
               {/* Keep the mic lit while recording (a crossed-out mic reads as "muted") */}
               <Mic className="w-6 h-6 text-white relative z-10" />
               {/* Blinking REC dot badge (opacity-only animation, no layout shift) */}
-              {isListening && (
+              {recActive && (
                 <span
                   className="absolute -top-0.5 -right-0.5 flex items-center justify-center rounded-full rec-blink z-20"
                   style={{ width: 14, height: 14, background: '#fff', pointerEvents: 'none' }}
@@ -1145,20 +1343,64 @@ const VoiceTranslator = () => {
           </div>
         </div>
 
-        {/* Live subtitle toggle */}
-        <div className="flex justify-center flex-shrink-0 pb-2">
-          <button
-            onClick={() => setLiveSubtitle(v => !v)}
-            className="flex items-center gap-1.5 text-xs px-3 py-1 rounded-full transition-colors"
-            style={{
-              color: liveSubtitle ? '#7a9a7e' : '#aaaaaa',
-              background: liveSubtitle ? 'rgba(122,154,126,0.1)' : 'transparent',
-            }}
-            title="即時翻譯字幕（邊說邊翻，會增加翻譯用量）"
-          >
-            <Zap className="w-3 h-3" />
-            即時字幕 {liveSubtitle ? '開' : '關'}
-          </button>
+        {/* Mode toggle (免費 Web Speech / 高品質 Live) + status */}
+        <div className="flex flex-col items-center gap-1.5 flex-shrink-0 pb-2 px-5">
+          {liveAvailable && (
+            <div className="flex items-center gap-1 p-0.5 rounded-full" style={{ background: '#f0ede8' }}>
+              {([[false, '一般'], [true, '高品質']] as const).map(([val, label]) => (
+                <button
+                  key={label}
+                  onClick={() => switchLiveMode(val)}
+                  className="px-3 py-1 rounded-full text-xs transition-all flex items-center gap-1"
+                  style={{
+                    background: liveMode === val ? '#c8956c' : 'transparent',
+                    color: liveMode === val ? '#fff' : '#888888',
+                    fontWeight: liveMode === val ? 600 : 400,
+                  }}
+                >
+                  {val && <Sparkles className="w-3 h-3" />}{label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {liveMode && !recActive && (
+            <div className="flex items-center gap-2 text-xs" style={{ color: '#888888' }}>
+              <span>音源</span>
+              {([['mic', '麥克風'], ['tab', '分頁音訊']] as const).map(([val, label]) => (
+                <button
+                  key={val}
+                  onClick={() => setLiveAudioSource(val)}
+                  className="px-2.5 py-0.5 rounded-full transition-colors"
+                  style={{
+                    background: liveAudioSource === val ? 'rgba(200,149,108,0.15)' : 'transparent',
+                    color: liveAudioSource === val ? '#c8956c' : '#aaaaaa',
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {liveMode && liveStatus === 'connecting' && (
+            <span className="text-xs" style={{ color: '#c8956c' }}>連線中…</span>
+          )}
+
+          {!liveMode && (
+            <button
+              onClick={() => setLiveSubtitle(v => !v)}
+              className="flex items-center gap-1.5 text-xs px-3 py-1 rounded-full transition-colors"
+              style={{
+                color: liveSubtitle ? '#7a9a7e' : '#aaaaaa',
+                background: liveSubtitle ? 'rgba(122,154,126,0.1)' : 'transparent',
+              }}
+              title="即時翻譯字幕（邊說邊翻，會增加翻譯用量）"
+            >
+              <Zap className="w-3 h-3" />
+              即時字幕 {liveSubtitle ? '開' : '關'}
+            </button>
+          )}
         </div>
 
         {/* Bottom bar */}
@@ -1198,10 +1440,12 @@ const VoiceTranslator = () => {
             {/* Source lang button */}
             <button
               onClick={() => setShowLangPicker('source')}
-              className="text-lg transition-colors hover:opacity-80"
+              disabled={lockSource}
+              className="text-lg transition-colors hover:opacity-80 disabled:opacity-40 disabled:cursor-not-allowed"
               style={{ color: '#888888' }}
+              title={lockSource ? '即時模式自動偵測來源語言' : undefined}
             >
-              {sourceLang === 'auto' ? `自動${detectedLang ? ` (${langName(detectedLang)})` : ''}` : langName(sourceLang)}
+              {lockSource ? '自動偵測' : (sourceLang === 'auto' ? `自動${detectedLang ? ` (${langName(detectedLang)})` : ''}` : langName(sourceLang))}
             </button>
 
             {/* Swap button */}
@@ -1213,9 +1457,9 @@ const VoiceTranslator = () => {
                   setTargetLang(tmp);
                 }
               }}
-              disabled={sourceLang === 'auto'}
-              className="flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-full transition-colors"
-              style={{ color: sourceLang === 'auto' ? '#e8e4df' : '#c8956c' }}
+              disabled={sourceLang === 'auto' || lockSource || lockTarget}
+              className="flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed"
+              style={{ color: (sourceLang === 'auto' || lockSource || lockTarget) ? '#e8e4df' : '#c8956c' }}
               title={sourceLang === 'auto' ? 'Cannot swap in auto-detect mode' : 'Swap languages'}
             >
               <ArrowRightLeft className="w-4 h-4" />
@@ -1224,12 +1468,23 @@ const VoiceTranslator = () => {
             {/* Target lang button */}
             <button
               onClick={() => setShowLangPicker('target')}
-              className="text-lg transition-colors hover:opacity-80"
+              disabled={lockTarget}
+              className="text-lg transition-colors hover:opacity-80 disabled:opacity-40 disabled:cursor-not-allowed"
               style={{ color: '#2d2d2d' }}
+              title={lockTarget ? '即時翻譯進行中無法切換語言，請先停止' : undefined}
             >
               {langName(targetLang)}
             </button>
           </div>
+
+          {/* Auto-detect caveat: Web Speech API can't auto-detect — it listens in
+              the browser language, so non-matching speech (e.g. Thai) barely
+              recognizes. Nudge the user to pick the real source language. */}
+          {sourceLang === 'auto' && (
+            <p className="text-center text-xs mt-2 px-2" style={{ color: '#b0a99f' }}>
+              語音辨識使用{getBrowserLangName()}；如說其他語言，請點左側指定來源語言
+            </p>
+          )}
         </div>
       </div>
     );
@@ -1262,10 +1517,12 @@ const VoiceTranslator = () => {
           <div className="flex items-center justify-center gap-2 sm:gap-4 mb-4 flex-wrap">
             <div className="flex flex-col items-center gap-1">
               <select
-                value={sourceLang}
+                value={lockSource ? 'auto' : sourceLang}
                 onChange={(e) => setSourceLang(e.target.value)}
-                className="px-2 sm:px-4 py-1.5 sm:py-2 text-sm sm:text-base border-2 rounded-lg focus:outline-none transition-colors"
+                disabled={lockSource}
+                className="px-2 sm:px-4 py-1.5 sm:py-2 text-sm sm:text-base border-2 rounded-lg focus:outline-none transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 style={{ borderColor: '#e8e4df' }}
+                title={lockSource ? '即時模式自動偵測來源語言' : undefined}
               >
                 <option value="auto">🔍 自動偵測 ({getBrowserLangName()})</option>
                 {languages.map(lang => (
@@ -1288,8 +1545,8 @@ const VoiceTranslator = () => {
                   setTargetLang(tmp);
                 }
               }}
-              disabled={sourceLang === 'auto'}
-              className={`p-2 rounded-lg transition-colors ${sourceLang === 'auto' ? 'text-gray-300 cursor-not-allowed' : 'hover:bg-gray-100 text-gray-600'}`}
+              disabled={sourceLang === 'auto' || lockSource || lockTarget}
+              className={`p-2 rounded-lg transition-colors ${(sourceLang === 'auto' || lockSource || lockTarget) ? 'text-gray-300 cursor-not-allowed' : 'hover:bg-gray-100 text-gray-600'}`}
               title={sourceLang === 'auto' ? '自動偵測模式無法交換' : '交換語言'}
             >
               <ArrowRightLeft className="w-5 h-5" />
@@ -1298,8 +1555,10 @@ const VoiceTranslator = () => {
             <select
               value={targetLang}
               onChange={(e) => setTargetLang(e.target.value)}
-              className="px-2 sm:px-4 py-1.5 sm:py-2 text-sm sm:text-base border-2 rounded-lg focus:outline-none transition-colors"
+              disabled={lockTarget}
+              className="px-2 sm:px-4 py-1.5 sm:py-2 text-sm sm:text-base border-2 rounded-lg focus:outline-none transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               style={{ borderColor: '#e8e4df' }}
+              title={lockTarget ? '即時翻譯進行中無法切換語言，請先停止' : undefined}
             >
               {languages.map(lang => (
                 <option key={lang.code} value={lang.code}>{lang.name}</option>
@@ -1427,19 +1686,64 @@ const VoiceTranslator = () => {
             </div>
           </div>
 
+          {/* Mode toggle (免費 Web Speech / 高品質 Live) */}
+          {liveAvailable && (
+            <div className="flex justify-center items-center gap-3 mb-3 flex-wrap">
+              <div className="flex items-center gap-1 p-0.5 rounded-lg" style={{ background: '#f0ede8' }}>
+                {([[false, '一般'], [true, '高品質']] as const).map(([val, label]) => (
+                  <button
+                    key={label}
+                    onClick={() => switchLiveMode(val)}
+                    className="px-3 py-1.5 rounded-md text-sm transition-all flex items-center gap-1"
+                    style={{
+                      background: liveMode === val ? '#c8956c' : 'transparent',
+                      color: liveMode === val ? '#fff' : '#888888',
+                      fontWeight: liveMode === val ? 600 : 400,
+                    }}
+                  >
+                    {val && <Sparkles className="w-3.5 h-3.5" />}{label}
+                  </button>
+                ))}
+              </div>
+              {liveMode && !recActive && (
+                <div className="flex items-center gap-2 text-sm" style={{ color: '#888888' }}>
+                  <span>音源</span>
+                  {([['mic', '麥克風'], ['tab', '分頁音訊']] as const).map(([val, label]) => (
+                    <button
+                      key={val}
+                      onClick={() => setLiveAudioSource(val)}
+                      className="px-2.5 py-1 rounded-md transition-colors"
+                      style={{
+                        background: liveAudioSource === val ? 'rgba(200,149,108,0.15)' : 'transparent',
+                        color: liveAudioSource === val ? '#c8956c' : '#aaaaaa',
+                      }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {liveMode && liveStatus === 'connecting' && (
+                <span className="text-sm" style={{ color: '#c8956c' }}>連線中…</span>
+              )}
+            </div>
+          )}
+
           {/* Controls */}
           <div className="flex justify-center gap-2 sm:gap-4 flex-wrap">
             <button
-              onClick={toggleListening}
-              disabled={!isSupported}
+              onClick={onMicClick}
+              disabled={!liveMode && !isSupported}
               className={`flex items-center gap-1 sm:gap-2 px-4 sm:px-6 py-2 sm:py-3 text-sm sm:text-base rounded-lg font-medium transition-all ${
-                isListening ? 'bg-red-500 hover:bg-red-600 text-white'
-                  : isSupported ? 'text-white'
+                recActive ? 'bg-red-500 hover:bg-red-600 text-white'
+                  : (liveMode || isSupported) ? 'text-white'
                     : 'bg-gray-300 text-gray-500 cursor-not-allowed'
               }`}
-              style={!isListening && isSupported ? { background: '#c8956c' } : undefined}
+              style={!recActive && (liveMode || isSupported) ? { background: '#c8956c' } : undefined}
             >
-              {isListening ? <><MicOff className="w-5 h-5" /> 停止錄音</> : <><Mic className="w-5 h-5" /> 開始語音輸入</>}
+              {recActive
+                ? <><MicOff className="w-5 h-5" /> 停止</>
+                : <><Mic className="w-5 h-5" /> {liveMode ? '開始即時翻譯' : '開始語音輸入'}</>}
             </button>
 
             <button
@@ -1453,15 +1757,17 @@ const VoiceTranslator = () => {
               清除
             </button>
 
-            <button
-              onClick={() => setLiveSubtitle(v => !v)}
-              className={`flex items-center gap-1 sm:gap-2 px-4 sm:px-6 py-2 sm:py-3 text-sm sm:text-base rounded-lg font-medium transition-colors ${
-                liveSubtitle ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-500'
-              }`}
-              title="即時翻譯字幕（邊說邊翻，會增加翻譯用量）"
-            >
-              <Zap className="w-4 h-4" /> 即時字幕 {liveSubtitle ? '開' : '關'}
-            </button>
+            {!liveMode && (
+              <button
+                onClick={() => setLiveSubtitle(v => !v)}
+                className={`flex items-center gap-1 sm:gap-2 px-4 sm:px-6 py-2 sm:py-3 text-sm sm:text-base rounded-lg font-medium transition-colors ${
+                  liveSubtitle ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-500'
+                }`}
+                title="即時翻譯字幕（邊說邊翻，會增加翻譯用量）"
+              >
+                <Zap className="w-4 h-4" /> 即時字幕 {liveSubtitle ? '開' : '關'}
+              </button>
+            )}
           </div>
 
           {/* Browser support notice */}
