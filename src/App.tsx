@@ -400,6 +400,12 @@ const VoiceTranslator = () => {
               }
               return parts[parts.length - 1].trim();
             }
+            // 連續講話常沒有句尾標點、也等不到 3 秒靜音,句子會無限累積不送出;
+            // 超過長度上限就強制斷句送翻譯。ponytail: 固定 50 字上限,若要按語意斷句再升級
+            if (combined.length >= 50) {
+              translateAndAddToHistory(combined, currentTarget, sourceLangRef.current);
+              return '';
+            }
             return combined;
           });
 
@@ -691,7 +697,7 @@ const VoiceTranslator = () => {
 
     // ── USAGE VIEW (admin-protected) ──
     if (embedView === 'usage') {
-      const containerStyle: React.CSSProperties = { background: '#faf9f6', color: '#2d2d2d', fontFamily: 'system-ui, sans-serif', touchAction: 'none' };
+      const containerStyle: React.CSSProperties = { height: '100dvh', background: '#faf9f6', color: '#2d2d2d', fontFamily: 'system-ui, sans-serif', touchAction: 'none' };
 
       // Not authenticated → login form
       if (!authToken) {
@@ -1180,7 +1186,7 @@ const VoiceTranslator = () => {
     );
 
     return (
-      <div className="h-screen w-screen flex flex-col overflow-hidden fixed inset-0" style={{ background: '#faf9f6', color: '#2d2d2d', fontFamily: 'system-ui, sans-serif', touchAction: 'none' }}>
+      <div className="h-screen w-screen flex flex-col overflow-hidden fixed inset-0" style={{ height: '100dvh', background: '#faf9f6', color: '#2d2d2d', fontFamily: 'system-ui, sans-serif', touchAction: 'none' }}>
 
         {langPickerOverlay}
 
@@ -1205,8 +1211,10 @@ const VoiceTranslator = () => {
         )}
 
         {/* Live speech recognition indicator */}
+        {/* Shrinkable (no flex-shrink-0): in a short embed iframe this box gives up
+            height first, so the mic/stop button row is never clipped off-screen. */}
         {(currentSentence || interimText) && (
-          <div className="mx-5 mt-3 mb-3 px-4 py-3 rounded-2xl flex items-start gap-3 flex-shrink-0" style={{ background: '#ffffff', border: '1px solid #e8e4df', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+          <div className="mx-5 mt-3 mb-3 px-4 py-3 rounded-2xl flex items-start gap-3 overflow-y-auto" style={{ background: '#ffffff', border: '1px solid #e8e4df', boxShadow: '0 1px 3px rgba(0,0,0,0.06)', maxHeight: '7rem', minHeight: '3rem' }}>
             <div className="animate-pulse mt-0.5">
               <Mic className="w-4 h-4" style={{ color: '#c8956c' }} />
             </div>

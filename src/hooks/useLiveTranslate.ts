@@ -99,6 +99,11 @@ export function useLiveTranslate(params: UseLiveTranslateParams): UseLiveTransla
         case 'output':
           curOutRef.current += m.text || '';
           cbRef.current.onPartial(curInRef.current, curOutRef.current);
+          // Gemini can go a very long time without turnComplete during continuous
+          // speech (meetings), leaving the utterance stuck in the preview forever.
+          // Force-commit past a length cap; buffers reset so nothing is duplicated.
+          // ponytail: fixed 80-char cap, tune if commits feel too chunky/choppy
+          if (curInRef.current.length >= 80) commit();
           break;
         case 'turnComplete':
           commit();
