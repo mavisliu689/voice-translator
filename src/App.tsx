@@ -39,6 +39,20 @@ import type { TranslationHistoryItem, Admin, UsageSummary, UsageRecord } from '.
 
 injectPulseStyleOnce();
 
+// Monotonic history id: one final event split into several sentences submits
+// them in the same millisecond, and raw Date.now() would collide — duplicate
+// React keys and an order-degenerate insert below (1).
+let lastHistoryId = 0;
+const nextHistoryId = () => (lastHistoryId = Math.max(lastHistoryId + 1, Date.now()));
+
+// Insert a history item by submission order (id = submission sequence, newest
+// first): with retry/backoff a later-submitted sentence can finish translating
+// first, and plain prepend would then show utterances out of order (F2).
+const insertHistoryItem = (prev: TranslationHistoryItem[], item: TranslationHistoryItem): TranslationHistoryItem[] => {
+  const idx = prev.findIndex(h => h.id < item.id);
+  return (idx === -1 ? [...prev, item] : [...prev.slice(0, idx), item, ...prev.slice(idx)]).slice(0, 20);
+};
+
 const VoiceTranslator = () => {
   const isEmbed = useIsEmbed();
 
@@ -64,6 +78,26 @@ const VoiceTranslator = () => {
   const sentenceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const interimTranslateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastInterimTranslatedRef = useRef('');
+  // Last un-finalized interim transcript, so onend/stop can fold it into the
+  // sentence buffer instead of the browser silently discarding it (Fix 1).
+  const pendingInterimRef = useRef('');
+  // Timestamp of the most recent recognition.start(), to throttle onend-driven
+  // restarts: a long session restarts immediately, a just-started one (no-speech
+  // loop) is padded out to 1s (Fix 2).
+  const lastStartAtRef = useRef(0);
+  // Submission-time de-dup: sentenceTimeout and stopListening can each flush the
+  // same sentence once (double-flush). Guarding at submission (not completion)
+  // keeps the duplicate from hitting the API, history, and the embed parent
+  // alike; a same-text submission within 2s is dropped, so legitimate repeats
+  // spoken later still record. Map (not just the last submission) because a
+  // multi-sentence final under StrictMode's double-invoked updater interleaves
+  // A,B,A,B — which slips past a last-only guard (B, 2).
+  const lastSubmitRef = useRef(new Map<string, number>()); // text → submittedAt
+  // Bumped to cancel in-flight translations on mode switch / unmount — the retry
+  // loop compares after every await and bails silently on mismatch. Deliberately
+  // NOT bumped by stopListening: a sentence finished before Stop should still
+  // complete its translation (F1).
+  const translateRunRef = useRef(0);
   const isListeningRef = useRef(false);
   const targetLangRef = useRef(targetLang);
   const sourceLangRef = useRef(sourceLang);
@@ -154,28 +188,61 @@ const VoiceTranslator = () => {
     }
   };
 
-  // Translate using backend API
+  // Translate using backend API.
+  // Retry 429 (rate limit) and network errors with backoff — a burst of fast
+  // speech trips the per-minute limit, and retrying recovers the sentence
+  // rather than dropping it. 3 attempts total: fail → wait 3s → wait 6s (Fix 3).
   const translateText = async (text: string, target: string, source?: string) => {
     if (!text) return null;
+    const run = translateRunRef.current; // cancellation token for this call (F1)
     setIsTranslating(true);
     setError('');
+    const backoffs = [3000, 6000];
     try {
-      return await translate(text, target, source);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // 429 = rate limited (often just talking fast); show the backend's gentle
-      // notice as-is rather than framing it as a hard "翻譯失敗".
-      if (err instanceof ApiError && err.status === 429) setError(msg);
-      else if (msg.includes('ECONNREFUSED')) setError('無法連接到翻譯服務');
-      else if (msg.includes('Network')) setError('網路連線失敗');
-      else setError(`翻譯失敗: ${msg}`);
-      return null;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const result = await translate(text, target, source);
+          if (translateRunRef.current !== run) return null; // cancelled while awaiting
+          return result;
+        } catch (err) {
+          if (translateRunRef.current !== run) return null; // cancelled: no error UI
+          const retryable =
+            (err instanceof ApiError && err.status === 429) ||
+            err instanceof TypeError; // fetch() rejects with TypeError on network failure
+          if (retryable && attempt < backoffs.length) {
+            await new Promise(r => setTimeout(r, backoffs[attempt]));
+            if (translateRunRef.current !== run) return null; // cancelled during backoff
+            continue;
+          }
+          const msg = err instanceof Error ? err.message : String(err);
+          // 429 = rate limited (often just talking fast); show the backend's gentle
+          // notice as-is rather than framing it as a hard "翻譯失敗".
+          if (err instanceof ApiError && err.status === 429) setError(msg);
+          else if (msg.includes('ECONNREFUSED')) setError('無法連接到翻譯服務');
+          else if (msg.includes('Network')) setError('網路連線失敗');
+          else setError(`翻譯失敗: ${msg}`);
+          return null;
+        }
+      }
     } finally {
       setIsTranslating(false);
     }
   };
 
   const translateAndAddToHistory = useCallback(async (text: string, target: string, source?: string) => {
+    // Same-text submission within 2s = double-flush; drop it before it costs an
+    // API call or reaches history/postMessage (B, 2).
+    const now = Date.now();
+    const submittedAt = lastSubmitRef.current.get(text);
+    if (submittedAt !== undefined && now - submittedAt < 2000) return;
+    for (const [t, at] of lastSubmitRef.current) {
+      if (now - at >= 2000) lastSubmitRef.current.delete(t); // prune expired entries
+    }
+    lastSubmitRef.current.set(text, now);
+    // Capture the ordering key + timestamp at submission, not completion (F2).
+    const id = nextHistoryId();
+    const timestamp = new Date().toISOString();
+
     const result = await translateText(text, target, source);
     if (result) {
       setDetectedLang(result.detectedLang);
@@ -192,40 +259,32 @@ const VoiceTranslator = () => {
         const retried = await translateText(text, newTarget, source);
         if (retried) {
           const newItem = {
-            id: Date.now(),
+            id,
             source: text,
             translation: retried.translation,
             detectedLang: retried.detectedLang,
             targetLang: newTarget,
-            timestamp: new Date().toISOString(),
+            timestamp,
             char_count: retried.char_count ?? 0,
             estimated_cost_usd: retried.estimated_cost_usd ?? 0,
           };
-          setTranslationHistory(prev => {
-            const exists = prev.some(item => item.source === text && (Date.now() - item.id) < 5000);
-            if (exists) return prev;
-            return [newItem, ...prev].slice(0, 20);
-          });
+          setTranslationHistory(prev => insertHistoryItem(prev, newItem));
           postTranslationResultToParent(newItem);
         }
         return;
       }
 
       const newItem = {
-        id: Date.now(),
+        id,
         source: text,
         translation: result.translation,
         detectedLang: result.detectedLang,
         targetLang: target,
-        timestamp: new Date().toISOString(),
+        timestamp,
         char_count: result.char_count ?? 0,
         estimated_cost_usd: result.estimated_cost_usd ?? 0,
       };
-      setTranslationHistory(prev => {
-        const exists = prev.some(item => item.source === text && (Date.now() - item.id) < 5000);
-        if (exists) return prev;
-        return [newItem, ...prev].slice(0, 20);
-      });
+      setTranslationHistory(prev => insertHistoryItem(prev, newItem));
       postTranslationResultToParent(newItem);
     }
   }, []);
@@ -236,7 +295,7 @@ const VoiceTranslator = () => {
   const addLiveItemToHistory = useCallback((source: string, translation: string, target: string) => {
     if (!source && !translation) return;
     const item = {
-      id: Date.now(),
+      id: nextHistoryId(), // monotonic — rapid commits in the same ms must not collide (1)
       source,
       translation,
       detectedLang: 'auto',
@@ -294,6 +353,10 @@ const VoiceTranslator = () => {
   // whatever is currently running first.
   const switchLiveMode = useCallback((toLive: boolean) => {
     if (liveMode === toLive) return;
+    // Cancel older in-flight translations (esp. retries sleeping in backoff) so
+    // stale free-mode results don't land mid-Live-session. Bumped BEFORE the
+    // stop below, so the sentence that stop flushes still completes (F1).
+    translateRunRef.current++;
     if (isListeningRef.current) stopListeningRef.current?.();
     if (liveStatus === 'live' || liveStatus === 'connecting') liveStop();
     setCurrentSentence(''); setInterimText(''); setInterimTranslation(''); setError('');
@@ -339,6 +402,57 @@ const VoiceTranslator = () => {
     }
   };
 
+  // Arm the 1200ms "sentence finished" flush: if no further speech arrives,
+  // translate whatever is buffered and clear it. Shared by the onresult final
+  // branch and the onend interim-fold path (Fix 1).
+  const armSentenceFlush = () => {
+    if (sentenceTimeoutRef.current) clearTimeout(sentenceTimeoutRef.current);
+    sentenceTimeoutRef.current = setTimeout(() => {
+      setCurrentSentence(prev => {
+        if (prev?.trim()) translateAndAddToHistory(prev.trim(), targetLangRef.current, sourceLangRef.current);
+        return '';
+      });
+      setInterimTranslation('');
+      lastInterimTranslatedRef.current = '';
+    }, 1200);
+  };
+
+  // Fold any un-finalized interim into the sentence buffer and re-arm the flush,
+  // so text the browser never finalized isn't dropped when its session ends
+  // (Fix 1). Also cancels the pending live-subtitle preview debounce — it refers
+  // to interim text that has just been folded (E2).
+  const foldPendingInterim = () => {
+    const pending = pendingInterimRef.current.trim();
+    if (!pending) return;
+    pendingInterimRef.current = '';
+    if (interimTranslateTimeoutRef.current) { clearTimeout(interimTranslateTimeoutRef.current); interimTranslateTimeoutRef.current = null; }
+    setInterimText('');
+    setCurrentSentence(prev => (prev ? prev + ' ' + pending : pending));
+    armSentenceFlush();
+  };
+
+  // Fold any pending interim into the buffered sentence and submit it NOW with
+  // an explicit source language. Used by Stop (current language) and by a
+  // source-language switch, which must tag the remnant with the OLD language —
+  // the deferred 1200ms flush would read sourceLangRef after it already points
+  // at the new one and mistranslate (3).
+  const flushBufferedSentence = (source: string) => {
+    const pending = pendingInterimRef.current.trim();
+    pendingInterimRef.current = '';
+    setInterimText('');
+    setInterimTranslation('');
+    lastInterimTranslatedRef.current = '';
+
+    setCurrentSentence(prev => {
+      const combined = pending ? (prev ? prev + ' ' + pending : pending) : prev;
+      if (combined?.trim()) translateAndAddToHistory(combined.trim(), targetLangRef.current, source);
+      return '';
+    });
+
+    if (sentenceTimeoutRef.current) { clearTimeout(sentenceTimeoutRef.current); sentenceTimeoutRef.current = null; }
+    if (interimTranslateTimeoutRef.current) { clearTimeout(interimTranslateTimeoutRef.current); interimTranslateTimeoutRef.current = null; }
+  };
+
   const startListening = () => {
     try {
       const SpeechRecognitionCtor = window.webkitSpeechRecognition || window.SpeechRecognition;
@@ -346,13 +460,19 @@ const VoiceTranslator = () => {
         setError('您的瀏覽器不支援語音識別功能。');
         return;
       }
+      // A restart timer armed for the old instance would call start() on the new
+      // one (already started → throws → pointless full rebuild); kill it (E1).
+      if (restartTimeoutRef.current) { clearTimeout(restartTimeoutRef.current); restartTimeoutRef.current = null; }
       if (recognitionRef.current) {
-        // Detach handlers before stopping the old instance, otherwise its onend
-        // fires the auto-restart path and races with the new instance we build
-        // below (e.g. when rebuilding to apply a source-language change).
+        // Rebuilding (e.g. to apply a source-language change): fold the old
+        // instance's pending interim into the sentence buffer, then fully detach
+        // before stop(). A late final from the dying instance would otherwise
+        // clobber the new session's pending interim and mix old-language text
+        // into the new sentence (C).
+        foldPendingInterim();
+        recognitionRef.current.onresult = null;
         recognitionRef.current.onend = null;
         recognitionRef.current.onerror = null;
-        recognitionRef.current.onresult = null;
         try { recognitionRef.current.stop(); } catch { /* */ }
         recognitionRef.current = null;
       }
@@ -401,7 +521,9 @@ const VoiceTranslator = () => {
               return parts[parts.length - 1].trim();
             }
             // 連續講話常沒有句尾標點、也等不到 3 秒靜音,句子會無限累積不送出;
-            // 超過長度上限就強制斷句送翻譯。ponytail: 固定 50 字上限,若要按語意斷句再升級
+            // 超過長度上限就強制斷句送翻譯（也順帶防超過後端 5000 字元上限）。
+            // ponytail: 固定 50 字上限,若要按語意斷句再升級。StrictMode 的
+            // updater 雙呼叫由提交時刻的 de-dup guard 吸收。
             if (combined.length >= 50) {
               translateAndAddToHistory(combined, currentTarget, sourceLangRef.current);
               return '';
@@ -409,21 +531,25 @@ const VoiceTranslator = () => {
             return combined;
           });
 
-          if (sentenceTimeoutRef.current) clearTimeout(sentenceTimeoutRef.current);
-          sentenceTimeoutRef.current = setTimeout(() => {
-            setCurrentSentence(prev => {
-              if (prev?.trim()) translateAndAddToHistory(prev.trim(), targetLangRef.current, sourceLangRef.current);
-              return '';
-            });
-            setInterimTranslation('');
-            lastInterimTranslatedRef.current = '';
-          }, 1200);
+          armSentenceFlush();
 
+          // A final supersedes the buffered interim — but the same event may
+          // already carry the NEXT utterance's interim; keep that one (D).
+          pendingInterimRef.current = interimTranscript;
+          // Cancel the pending preview debounce: it refers to interim text the
+          // final result just replaced (E2).
+          if (interimTranslateTimeoutRef.current) { clearTimeout(interimTranslateTimeoutRef.current); interimTranslateTimeoutRef.current = null; }
           setInterimText('');
           setInterimTranslation('');
           lastInterimTranslatedRef.current = '';
         } else if (interimTranscript) {
           setInterimText(interimTranscript);
+          // Remember the latest un-finalized interim so onend/stop can fold it
+          // into the sentence buffer instead of the browser discarding it (Fix 1).
+          pendingInterimRef.current = interimTranscript;
+          // User is still speaking: push the pending flush out so a folded
+          // remnant isn't translated as a fragment mid-utterance (E3).
+          if (sentenceTimeoutRef.current && currentSentenceRef.current) armSentenceFlush();
           if (liveSubtitleRef.current) {
             const preview = currentSentenceRef.current
               ? currentSentenceRef.current + ' ' + interimTranscript
@@ -456,20 +582,32 @@ const VoiceTranslator = () => {
       };
 
       recognition.onend = () => {
+        // Fold any un-finalized interim before the browser discards it on
+        // session end — otherwise the phrase spoken right before onend is lost;
+        // the re-armed flush emits it if no further speech follows (Fix 1).
+        foldPendingInterim();
+
         if (isListeningRef.current) {
           if (restartTimeoutRef.current) clearTimeout(restartTimeoutRef.current);
+          // Restart immediately after a long session; only pad up to 1s when the
+          // session was just started (no-speech loop) to avoid a hot restart loop.
+          // This replaces the fixed 250ms delay that dropped ~250ms of speech on
+          // every recognizer cycle (Fix 2).
+          const delay = Math.max(0, 1000 - (Date.now() - lastStartAtRef.current));
           restartTimeoutRef.current = setTimeout(() => {
             if (isListeningRef.current && recognitionRef.current) {
+              lastStartAtRef.current = Date.now();
               try { recognitionRef.current.start(); } catch {
                 try { startListening(); } catch { setIsListening(false); }
               }
             }
-          }, 250);
+          }, delay);
         } else {
           setIsListening(false);
         }
       };
 
+      lastStartAtRef.current = Date.now();
       recognition.start();
     } catch (err) {
       setError('無法啟動語音識別：' + (err instanceof Error ? err.message : String(err)));
@@ -479,20 +617,22 @@ const VoiceTranslator = () => {
 
   const stopListening = () => {
     setIsListening(false);
-    setInterimText('');
-    setInterimTranslation('');
-    lastInterimTranslatedRef.current = '';
 
-    setCurrentSentence(prev => {
-      if (prev?.trim()) translateAndAddToHistory(prev.trim(), targetLangRef.current, sourceLangRef.current);
-      return '';
-    });
+    // Fold + submit the trailing phrase so speech right before Stop isn't
+    // dropped (Fix 1).
+    flushBufferedSentence(sourceLangRef.current);
 
     if (restartTimeoutRef.current) { clearTimeout(restartTimeoutRef.current); restartTimeoutRef.current = null; }
-    if (sentenceTimeoutRef.current) { clearTimeout(sentenceTimeoutRef.current); sentenceTimeoutRef.current = null; }
-    if (interimTranslateTimeoutRef.current) { clearTimeout(interimTranslateTimeoutRef.current); interimTranslateTimeoutRef.current = null; }
 
     if (recognitionRef.current) {
+      // Detach everything before stop(): the fold above already captured the
+      // tail, a late final would re-enter the emptied sentence buffer and
+      // translate the same speech a second time (A), and a late onstart would
+      // flip the UI back to "listening" after a quick start→stop (5).
+      recognitionRef.current.onstart = null;
+      recognitionRef.current.onresult = null;
+      recognitionRef.current.onend = null;
+      recognitionRef.current.onerror = null;
       try { recognitionRef.current.stop(); } catch { /* */ }
       recognitionRef.current = null;
     }
@@ -510,8 +650,16 @@ const VoiceTranslator = () => {
   const prevSourceLangRef = useRef(sourceLang);
   useEffect(() => {
     if (prevSourceLangRef.current === sourceLang) return;
+    const oldLang = prevSourceLangRef.current;
     prevSourceLangRef.current = sourceLang;
-    if (isListeningRef.current) startListening();
+    if (isListeningRef.current) {
+      // Submit any old-language remnant NOW, explicitly tagged with the OLD
+      // source: sourceLangRef already points at the new language, so a deferred
+      // flush would send old-language text as the new one (3). This empties the
+      // buffers, making the rebuild's foldPendingInterim a no-op.
+      flushBufferedSentence(oldLang);
+      startListening();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourceLang]);
 
@@ -527,10 +675,24 @@ const VoiceTranslator = () => {
 
   useEffect(() => {
     return () => {
+      // Cancel in-flight translations/retries (F1). Mutable counter, not a DOM
+      // node ref — reading the latest value at cleanup is exactly the intent.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      translateRunRef.current++;
+      isListeningRef.current = false;
       if (restartTimeoutRef.current) clearTimeout(restartTimeoutRef.current);
       if (sentenceTimeoutRef.current) clearTimeout(sentenceTimeoutRef.current);
       if (interimTranslateTimeoutRef.current) clearTimeout(interimTranslateTimeoutRef.current);
-      if (recognitionRef.current) { try { recognitionRef.current.stop(); } catch { /* */ } }
+      if (recognitionRef.current) {
+        // Same detach discipline as stopListening, minus the tail-flush — an
+        // unmounting component must not fire one last translation (5).
+        recognitionRef.current.onstart = null;
+        recognitionRef.current.onresult = null;
+        recognitionRef.current.onend = null;
+        recognitionRef.current.onerror = null;
+        try { recognitionRef.current.stop(); } catch { /* */ }
+        recognitionRef.current = null;
+      }
     };
   }, []);
 
@@ -1758,7 +1920,11 @@ const VoiceTranslator = () => {
               onClick={() => {
                 setSourceText(''); setInterimText(''); setCurrentSentence(''); setInterimTranslation('');
                 setTranslationHistory([]); setError(''); setDetectedLang(null);
+                pendingInterimRef.current = ''; // stale interim must not resurface via onend fold (D)
+                lastInterimTranslatedRef.current = '';
                 if (sentenceTimeoutRef.current) { clearTimeout(sentenceTimeoutRef.current); sentenceTimeoutRef.current = null; }
+                // A pending preview debounce would repaint the cleared subtitle and burn an API call (4).
+                if (interimTranslateTimeoutRef.current) { clearTimeout(interimTranslateTimeoutRef.current); interimTranslateTimeoutRef.current = null; }
               }}
               className="px-4 sm:px-6 py-2 sm:py-3 text-sm sm:text-base bg-gray-200 hover:bg-gray-300 rounded-lg font-medium transition-colors"
             >
