@@ -41,7 +41,7 @@
 - **用量追蹤 API（需 auth）**：
   - `GET /api/usage/summary?period=week|month` 或 `?from=YYYY-MM-DD&to=YYYY-MM-DD` — 所選期間總計（省略＝全部；week/month 以 `USAGE_TZ`，預設 Asia/Taipei，的週一／月初 00:00 為界；from/to 為該時區的日曆日、含迄日，格式錯或起日晚於迄日回 400）。免費額度與 `actual_cost` 固定以當月計算
   - `GET /api/usage/history?from=&to=` — 每日用量
-  - `GET /api/usage/recent` — 最近 50 筆
+  - `GET /api/usage/recent?limit=50&offset=0` — 由新到舊分頁（limit 上限 200），回傳 `records`、`total`
 
 ### 部署
 - **單一映像檔**：`Dockerfile`（多階段建置）將前端建置產物放入 `dist/`，由 Node server 同時提供靜態前端與 API（port `5876`）。

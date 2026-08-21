@@ -806,18 +806,21 @@ app.get('/api/usage/history', requireAuth, (req, res) => {
   }
 });
 
-// GET /api/usage/recent -- last 50 translation records
+// GET /api/usage/recent?limit=50&offset=0 -- newest first, with total for paging
 app.get('/api/usage/recent', requireAuth, (req, res) => {
   try {
+    const limit  = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
+    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+    const total  = db.prepare('SELECT COUNT(*) AS n FROM translations').get().n;
     const records = db.prepare(`
       SELECT id, timestamp, source_lang, target_lang, char_count, estimated_cost_usd,
              COALESCE(model_used, 'basic') AS model_used
       FROM translations
-      ORDER BY timestamp DESC
-      LIMIT 50
-    `).all();
+      ORDER BY timestamp DESC, id DESC
+      LIMIT @limit OFFSET @offset
+    `).all({ limit, offset });
 
-    res.json({ records });
+    res.json({ records, total, limit, offset });
   } catch (error) {
     console.error('Usage recent error:', error);
     res.status(500).json({ error: 'Failed to retrieve recent records' });

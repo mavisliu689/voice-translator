@@ -17,6 +17,7 @@ import {
   fetchUsageSummary,
   type UsagePeriod,
   fetchUsageRecent,
+  appendRecords,
   fetchAdmins as apiFetchAdmins,
   createAdmin,
   deleteAdmin,
@@ -116,6 +117,8 @@ const VoiceTranslator = () => {
   const [showLangPicker, setShowLangPicker] = useState<'source' | 'target' | null>(null);
   const [usageSummary, setUsageSummary] = useState<UsageSummary | null>(null);
   const [usageRecent, setUsageRecent] = useState<UsageRecord[]>([]);
+  const [usageRecentTotal, setUsageRecentTotal] = useState(0);
+  const [loadingMoreRecent, setLoadingMoreRecent] = useState(false);
   const [usagePeriod, setUsagePeriod] = useState<UsagePeriod>('week');
   const [usageRange, setUsageRange] = useState(() => {
     const today = localIsoDate(new Date());
@@ -764,11 +767,23 @@ const VoiceTranslator = () => {
         fetchUsageRecent(authedFetch),
       ]);
       if (summary) setUsageSummary(summary);
-      setUsageRecent(recent);
+      setUsageRecent(recent.records);
+      setUsageRecentTotal(recent.total);
     } catch {
       // Silently fail - usage is informational
     }
   }, [authToken, authedFetch, usagePeriod, usageRange]);
+
+  const loadMoreRecent = useCallback(async () => {
+    setLoadingMoreRecent(true);
+    try {
+      const page = await fetchUsageRecent(authedFetch, usageRecent.length);
+      setUsageRecent((prev) => appendRecords(prev, page.records));
+      setUsageRecentTotal(page.total);
+    } catch { /* ignore */ } finally {
+      setLoadingMoreRecent(false);
+    }
+  }, [authedFetch, usageRecent.length]);
 
   const fetchAdmins = useCallback(async () => {
     if (!authToken) return;
@@ -1293,7 +1308,7 @@ const VoiceTranslator = () => {
                   <p className="text-sm py-6 text-center" style={{ color: '#888888' }}>暫無記錄</p>
                 ) : (
                   usageRecent.map((record, idx) => (
-                    <div key={idx} className="rounded-2xl p-4" style={{ background: '#ffffff', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+                    <div key={record.id ?? idx} className="rounded-2xl p-4" style={{ background: '#ffffff', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
                       <div className="flex items-center justify-between mb-1">
                         <span className="text-sm" style={{ color: '#2d2d2d' }}>
                           {langName(record.source_lang || '?')} <span style={{ color: '#e8e4df' }}>&rarr;</span> {langName(record.target_lang || '?')}
@@ -1310,6 +1325,17 @@ const VoiceTranslator = () => {
                   ))
                 )}
               </div>
+              {usageRecent.length < usageRecentTotal && (
+                <button
+                  type="button"
+                  onClick={loadMoreRecent}
+                  disabled={loadingMoreRecent}
+                  className="w-full mt-3 py-2.5 rounded-xl text-sm transition-colors disabled:opacity-50"
+                  style={{ background: '#f0ede8', color: '#2d2d2d' }}
+                >
+                  {loadingMoreRecent ? '載入中…' : `載入更多（${usageRecent.length} / ${usageRecentTotal}）`}
+                </button>
+              )}
             </div>
           </div>
         </div>

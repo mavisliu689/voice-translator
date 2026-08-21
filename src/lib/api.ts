@@ -126,13 +126,24 @@ export async function fetchUsageSummary(
   return res.ok ? (res.json() as Promise<UsageSummary>) : null;
 }
 
+export type UsageRecentPage = { records: UsageRecord[]; total: number };
+
 export async function fetchUsageRecent(
   authedFetch: (u: string, i?: RequestInit) => Promise<Response>,
-): Promise<UsageRecord[]> {
-  const res = await authedFetch(`${BACKEND_URL}/api/usage/recent`);
-  if (!res.ok) return [];
+  offset = 0,
+  limit = 50,
+): Promise<UsageRecentPage> {
+  const res = await authedFetch(`${BACKEND_URL}/api/usage/recent?limit=${limit}&offset=${offset}`);
+  if (!res.ok) return { records: [], total: 0 };
   const data = await res.json();
-  return Array.isArray(data) ? data : data.records || [];
+  const records: UsageRecord[] = Array.isArray(data) ? data : data.records || [];
+  return { records, total: typeof data.total === 'number' ? data.total : records.length };
+}
+
+/** Append a page, skipping ids already shown (a new translation can shift offsets between requests). */
+export function appendRecords(prev: UsageRecord[], next: UsageRecord[]): UsageRecord[] {
+  const seen = new Set(prev.map((r) => r.id));
+  return prev.concat(next.filter((r) => !seen.has(r.id)));
 }
 
 // ─── Admins (protected) ────────────────────────────────────────────────────
