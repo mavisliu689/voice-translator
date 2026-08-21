@@ -13,11 +13,13 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { attachLiveTranslate } from './liveTranslate.js';
 import { toTraditional } from './zhConvert.js';
+import { periodSince, localMonth } from './usage-period.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 dotenv.config();
+periodSince('month'); // fail fast at startup if USAGE_TZ is not a valid IANA zone
 
 // ---------------------------------------------------------------------------
 // SQLite database initialization
@@ -103,15 +105,14 @@ function getLiveCostCap() {
   return Number.isFinite(v) && v >= 0 ? v : 100;
 }
 
+// Same month boundary as /api/usage/summary (local USAGE_TZ midnight, see usage-period.js).
 const getLiveMonthCostStmt = db.prepare(`
   SELECT COALESCE(SUM(estimated_cost_usd), 0) AS cost
   FROM translations
-  WHERE COALESCE(model_used, 'basic') = 'live' AND timestamp LIKE ?
+  WHERE COALESCE(model_used, 'basic') = 'live' AND timestamp >= ?
 `);
 function getLiveMonthCost() {
-  const now = new Date();
-  const monthPrefix = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}%`;
-  return getLiveMonthCostStmt.get(monthPrefix)?.cost || 0;
+  return getLiveMonthCostStmt.get(periodSince('month'))?.cost || 0;
 }
 
 // Live bridge handle (set once attachLiveTranslate runs at startup). Lets the
@@ -694,50 +695,60 @@ app.put('/api/settings', requireAuth, (req, res) => {
 // Usage tracking endpoints (protected)
 // ---------------------------------------------------------------------------
 
-// GET /api/usage/summary -- current month totals with free-tier adjustment
-// Free tier (500K chars/month, $0/char) only applies to the basic engine.
+// Per-engine totals for rows with timestamp >= since (null => all rows).
+const sumByModelStmt = db.prepare(`
+  SELECT
+    COALESCE(model_used, 'basic')         AS model,
+    COALESCE(SUM(char_count), 0)          AS chars,
+    COALESCE(SUM(estimated_cost_usd), 0)  AS cost,
+    COUNT(*)                                AS requests
+  FROM translations
+  WHERE (@since IS NULL OR timestamp >= @since)
+  GROUP BY COALESCE(model_used, 'basic')
+`);
+function sumByModel(since) {
+  const out = {
+    basic:   { chars: 0, cost: 0, requests: 0 },
+    premium: { chars: 0, cost: 0, requests: 0 },
+    live:    { chars: 0, cost: 0, requests: 0 },
+  };
+  for (const r of sumByModelStmt.all({ since })) {
+    const key = out[r.model] ? r.model : 'basic';
+    out[key].chars    += r.chars;
+    out[key].cost     += r.cost;
+    out[key].requests += r.requests;
+  }
+  return out;
+}
+
+// GET /api/usage/summary?period=week|month  -- totals for the period (default: all time)
+// Free tier (500K chars/month, $0/char) only applies to the basic engine and is
+// always computed over the current month regardless of `period`.
 // Premium (Gemini) is billed from the first character.
 app.get('/api/usage/summary', requireAuth, (req, res) => {
   try {
     const now = new Date();
-    const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-    const monthPrefix = month + '%';
+    const period = ['week', 'month'].includes(req.query.period) ? req.query.period : 'all';
+    const since = periodSince(period, now);          // null => no time filter
+    const monthSince = periodSince('month', now);
+    const month = localMonth(now);
 
-    const perModel = db.prepare(`
-      SELECT
-        COALESCE(model_used, 'basic')         AS model,
-        COALESCE(SUM(char_count), 0)          AS chars,
-        COALESCE(SUM(estimated_cost_usd), 0)  AS cost,
-        COUNT(*)                                AS requests
-      FROM translations
-      WHERE timestamp LIKE @monthPrefix
-      GROUP BY COALESCE(model_used, 'basic')
-    `).all({ monthPrefix });
-
-    const by_model = {
-      basic:   { chars: 0, cost: 0, requests: 0 },
-      premium: { chars: 0, cost: 0, requests: 0 },
-      live:    { chars: 0, cost: 0, requests: 0 },
-    };
-    for (const r of perModel) {
-      const key = by_model[r.model] ? r.model : 'basic';
-      by_model[key].chars    += r.chars;
-      by_model[key].cost     += r.cost;
-      by_model[key].requests += r.requests;
-    }
+    const by_model      = sumByModel(since);                                   // selected period
+    const monthByModel  = period === 'month' ? by_model : sumByModel(monthSince); // free tier is monthly
 
     const totalChars     = by_model.basic.chars + by_model.premium.chars + by_model.live.chars;
     const totalCostEst   = by_model.basic.cost  + by_model.premium.cost  + by_model.live.cost;
     const totalRequests  = by_model.basic.requests + by_model.premium.requests + by_model.live.requests;
 
-    const freeTierLimit  = 500000; // applies only to basic
-    const basicChars     = by_model.basic.chars;
+    const freeTierLimit  = 500000; // applies only to basic, resets monthly
+    const basicChars     = monthByModel.basic.chars;
     const freeRemaining  = Math.max(0, freeTierLimit - basicChars);
     const basicActualCost = basicChars <= freeTierLimit
       ? 0
       : (basicChars - freeTierLimit) * MODEL_COSTS.basic;
+    // actual_cost = current month's billable amount (independent of `period`).
     // Premium (Gemini text) and Live (Gemini audio, per-minute) are billed from $0.
-    const actualCost     = basicActualCost + by_model.premium.cost + by_model.live.cost;
+    const actualCost     = basicActualCost + monthByModel.premium.cost + monthByModel.live.cost;
 
     res.json({
       total_chars: totalChars,

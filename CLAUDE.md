@@ -39,7 +39,7 @@
 - **管理員 API（需 auth）**：
   - `GET    /api/admins`、`POST /api/admins`、`DELETE /api/admins/:id`
 - **用量追蹤 API（需 auth）**：
-  - `GET /api/usage/summary` — 當月總計（含免費額度計算）
+  - `GET /api/usage/summary?period=week|month` — 所選期間總計（省略＝全部；以 `USAGE_TZ`，預設 Asia/Taipei，的週一／月初 00:00 為界）。免費額度與 `actual_cost` 固定以當月計算
   - `GET /api/usage/history?from=&to=` — 每日用量
   - `GET /api/usage/recent` — 最近 50 筆
 

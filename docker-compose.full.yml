@@ -16,6 +16,8 @@ services:
       - GOOGLE_TRANSLATE_API_KEY=${GOOGLE_TRANSLATE_API_KEY}
       # 高品質（premium 文字）與 Live 即時語音翻譯需要此 key
       - GEMINI_API_KEY=${GEMINI_API_KEY}
+      # 用量統計「本週／本月」的時區邊界（IANA 名稱），預設 Asia/Taipei
+      - USAGE_TZ=${USAGE_TZ:-Asia/Taipei}
       - FRONTEND_URL=http://localhost:8080
     restart: unless-stopped
     networks:
