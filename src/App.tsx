@@ -15,6 +15,7 @@ import {
   login as apiLogin,
   makeAuthedFetch,
   fetchUsageSummary,
+  type UsagePeriod,
   fetchUsageRecent,
   fetchAdmins as apiFetchAdmins,
   createAdmin,
@@ -52,6 +53,11 @@ const insertHistoryItem = (prev: TranslationHistoryItem[], item: TranslationHist
   const idx = prev.findIndex(h => h.id < item.id);
   return (idx === -1 ? [...prev, item] : [...prev.slice(0, idx), item, ...prev.slice(idx)]).slice(0, 20);
 };
+
+// 'YYYY-MM-DD' in the browser's local calendar (what <input type="date"> speaks).
+function localIsoDate(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
 
 const VoiceTranslator = () => {
   const isEmbed = useIsEmbed();
@@ -110,7 +116,11 @@ const VoiceTranslator = () => {
   const [showLangPicker, setShowLangPicker] = useState<'source' | 'target' | null>(null);
   const [usageSummary, setUsageSummary] = useState<UsageSummary | null>(null);
   const [usageRecent, setUsageRecent] = useState<UsageRecord[]>([]);
-  const [usagePeriod, setUsagePeriod] = useState<'week' | 'month' | 'all'>('week');
+  const [usagePeriod, setUsagePeriod] = useState<UsagePeriod>('week');
+  const [usageRange, setUsageRange] = useState(() => {
+    const today = localIsoDate(new Date());
+    return { from: today.slice(0, 8) + '01', to: today };
+  });
 
   // Auth & admin management state
   const [authToken, setAuthToken] = useState<string | null>(() => localStorage.getItem(AUTH_TOKEN_KEY));
@@ -747,9 +757,10 @@ const VoiceTranslator = () => {
   // Fetch usage data when switching to usage view (requires auth)
   const fetchUsageData = useCallback(async () => {
     if (!authToken) return;
+    if (usagePeriod === 'custom' && usageRange.from > usageRange.to) return; // server would 400
     try {
       const [summary, recent] = await Promise.all([
-        fetchUsageSummary(authedFetch, usagePeriod),
+        fetchUsageSummary(authedFetch, usagePeriod, usageRange),
         fetchUsageRecent(authedFetch),
       ]);
       if (summary) setUsageSummary(summary);
@@ -757,7 +768,7 @@ const VoiceTranslator = () => {
     } catch {
       // Silently fail - usage is informational
     }
-  }, [authToken, authedFetch, usagePeriod]);
+  }, [authToken, authedFetch, usagePeriod, usageRange]);
 
   const fetchAdmins = useCallback(async () => {
     if (!authToken) return;
@@ -1007,7 +1018,7 @@ const VoiceTranslator = () => {
                           {admin.username === authUsername && <span className="ml-2 text-xs" style={{ color: '#c8956c' }}>（你）</span>}
                         </p>
                         <p className="text-xs mt-0.5" style={{ color: '#888888' }}>
-                          建立於 {admin.created_at ? new Date(admin.created_at + 'Z').toLocaleString('zh-TW', { year: 'numeric', month: 'short', day: 'numeric' }) : '—'}
+                          建立於 {admin.created_at ? new Date(admin.created_at.replace(' ', 'T') + 'Z').toLocaleString('zh-TW', { year: 'numeric', month: 'short', day: 'numeric' }) : '—'}
                         </p>
                       </div>
                       <button
@@ -1209,7 +1220,7 @@ const VoiceTranslator = () => {
 
           {/* Period tabs */}
           <div className="flex gap-2 px-5 mb-5 flex-shrink-0">
-            {([['week', '本週'], ['month', '本月'], ['all', '全部']] as const).map(([key, label]) => (
+            {([['week', '本週'], ['month', '本月'], ['all', '全部'], ['custom', '自訂']] as const).map(([key, label]) => (
               <button
                 key={key}
                 onClick={() => setUsagePeriod(key)}
@@ -1224,6 +1235,24 @@ const VoiceTranslator = () => {
               </button>
             ))}
           </div>
+
+          {usagePeriod === 'custom' && (
+            <div className="flex items-center gap-2 px-5 mb-5 flex-shrink-0 text-sm">
+              <input
+                type="date" value={usageRange.from} max={usageRange.to}
+                onChange={(e) => e.target.value && setUsageRange((r) => ({ ...r, from: e.target.value }))}
+                className="flex-1 min-w-0 px-3 py-2 rounded-xl outline-none"
+                style={{ background: '#faf9f6', border: '1px solid #e8e4df', color: '#2d2d2d' }}
+              />
+              <span style={{ color: '#888888' }}>至</span>
+              <input
+                type="date" value={usageRange.to} min={usageRange.from} max={localIsoDate(new Date())}
+                onChange={(e) => e.target.value && setUsageRange((r) => ({ ...r, to: e.target.value }))}
+                className="flex-1 min-w-0 px-3 py-2 rounded-xl outline-none"
+                style={{ background: '#faf9f6', border: '1px solid #e8e4df', color: '#2d2d2d' }}
+              />
+            </div>
+          )}
 
           <div className="flex-1 overflow-y-auto px-5 pb-6" style={{ scrollbarWidth: 'thin', scrollbarColor: '#e8e4df transparent', touchAction: 'pan-y', WebkitOverflowScrolling: 'touch' } as React.CSSProperties}>
 
@@ -1270,7 +1299,7 @@ const VoiceTranslator = () => {
                           {langName(record.source_lang || '?')} <span style={{ color: '#e8e4df' }}>&rarr;</span> {langName(record.target_lang || '?')}
                         </span>
                         <span className="text-xs" style={{ color: '#888888' }}>
-                          {record.timestamp ? new Date(record.timestamp).toLocaleString('zh-TW', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}
+                          {record.timestamp ? new Date(record.timestamp.replace(' ', 'T') + 'Z').toLocaleString('zh-TW', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}
                         </span>
                       </div>
                       <div className="flex items-center gap-2">

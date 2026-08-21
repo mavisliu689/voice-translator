@@ -34,7 +34,7 @@ describe('server smoke', () => {
 // /api/usage/summary?period= boundaries. The DB column is UTC 'YYYY-MM-DD HH:MM:SS';
 // periods start at local (Asia/Taipei, UTC+8) midnight, so the returned string
 // is that instant expressed in UTC.
-import { periodSince, localMonth } from './usage-period.js';
+import { periodSince, localMonth, dayRange } from './usage-period.js';
 
 describe('periodSince', () => {
   // Thu 2026-08-20 14:30 Taipei == 06:30 UTC
@@ -109,5 +109,29 @@ describe('USAGE_TZ is read at call time (dotenv runs after imports in index.js)'
     } finally {
       if (prev === undefined) delete process.env.USAGE_TZ; else process.env.USAGE_TZ = prev;
     }
+  });
+});
+
+describe('dayRange (custom from/to, inclusive local calendar days)', () => {
+  it('converts Taipei calendar days to a half-open UTC window', () => {
+    expect(dayRange('2026-08-01', '2026-08-01')).toEqual({ since: '2026-07-31 16:00:00', until: '2026-08-01 16:00:00' });
+    expect(dayRange('2026-08-17', '2026-08-20')).toEqual({ since: '2026-08-16 16:00:00', until: '2026-08-20 16:00:00' });
+  });
+
+  it('handles month/year end on the `to` side', () => {
+    expect(dayRange('2026-12-31', '2026-12-31')).toEqual({ since: '2026-12-30 16:00:00', until: '2026-12-31 16:00:00' });
+  });
+
+  it('rejects malformed, impossible, reversed, or non-string input', () => {
+    expect(dayRange('2026-8-1', '2026-08-02')).toBeNull();
+    expect(dayRange('2026-02-30', '2026-03-01')).toBeNull();
+    expect(dayRange('2026-08-20', '2026-08-19')).toBeNull();
+    expect(dayRange(['2026-08-01'], '2026-08-02')).toBeNull();
+    expect(dayRange(undefined, '2026-08-02')).toBeNull();
+  });
+
+  it('respects the tz argument (DST zone, spring forward inside the range)', () => {
+    expect(dayRange('2026-03-07', '2026-03-08', 'America/New_York'))
+      .toEqual({ since: '2026-03-07 05:00:00', until: '2026-03-09 04:00:00' });
   });
 });

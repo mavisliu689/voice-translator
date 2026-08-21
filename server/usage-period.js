@@ -30,19 +30,44 @@ function localParts(instant, tz) {
   return { y: +p.year, m: p.month - 1, d: +p.day, offset: asUtc - instant.getTime() };
 }
 
+const toSql = (ms) => new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
+
+// UTC instant (ms) of local midnight on calendar day (y, m0, d) in `tz`; `d` may
+// overflow/underflow the month. Uses the offset in effect AT that midnight, not
+// at `now`: across a DST change they differ by an hour. One refinement is enough
+// since midnight is never inside a DST gap for the zones we care about.
+function localMidnightUtc(y, m, d, tz) {
+  const wall = Date.UTC(y, m, d);
+  const guess = wall - localParts(new Date(wall), tz).offset;
+  return wall - localParts(new Date(guess), tz).offset;
+}
+
 // Returns the UTC 'YYYY-MM-DD HH:MM:SS' start of the period (week = Monday
 // 00:00 local, month = 1st 00:00 local), or null for 'all' / unknown values.
 export function periodSince(period, now = new Date(), tz = usageTz()) {
   if (period !== 'week' && period !== 'month') return null;
-  const { y, m, d, offset } = localParts(now, tz);
+  const { y, m, d } = localParts(now, tz);
   const dow = (new Date(Date.UTC(y, m, d)).getUTCDay() + 6) % 7; // Mon=0 .. Sun=6
-  const startLocal = period === 'week' ? Date.UTC(y, m, d - dow) : Date.UTC(y, m, 1);
-  // Use the offset in effect AT the period start, not now: across a DST change
-  // they differ by an hour. One refinement is enough since midnight is never
-  // inside a DST gap for the zones we care about.
-  const guess = startLocal - offset;
-  const start = startLocal - localParts(new Date(guess), tz).offset;
-  return new Date(start).toISOString().slice(0, 19).replace('T', ' ');
+  return toSql(period === 'week' ? localMidnightUtc(y, m, d - dow, tz) : localMidnightUtc(y, m, 1, tz));
+}
+
+// Parses 'YYYY-MM-DD' into [y, m0, d]; null if malformed or not a real date.
+function parseDay(s) {
+  if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  const [y, m, d] = s.split('-').map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d));
+  return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d ? [y, m - 1, d] : null;
+}
+
+// Inclusive local calendar-day range -> { since, until } UTC strings for
+// `timestamp >= since AND timestamp < until`. null if invalid or from > to.
+export function dayRange(from, to, tz = usageTz()) {
+  const a = parseDay(from), b = parseDay(to);
+  if (!a || !b || from > to) return null;
+  return {
+    since: toSql(localMidnightUtc(a[0], a[1], a[2], tz)),
+    until: toSql(localMidnightUtc(b[0], b[1], b[2] + 1, tz)),
+  };
 }
 
 // 'YYYY-MM' of the current month in `tz` (label only).

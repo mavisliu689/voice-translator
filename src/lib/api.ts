@@ -109,12 +109,20 @@ export function makeAuthedFetch(getToken: () => string | null, onUnauthorized: (
 
 // ─── Usage (protected) ─────────────────────────────────────────────────────
 
+export type UsagePeriod = 'week' | 'month' | 'all' | 'custom';
+export type UsageDateRange = { from: string; to: string }; // 'YYYY-MM-DD', inclusive
+
+export function usageSummaryQuery(period: UsagePeriod, range?: UsageDateRange): string {
+  if (period === 'custom') return range ? `?from=${range.from}&to=${range.to}` : '';
+  return period !== 'all' ? `?period=${period}` : '';
+}
+
 export async function fetchUsageSummary(
   authedFetch: (u: string, i?: RequestInit) => Promise<Response>,
-  period: 'week' | 'month' | 'all',
+  period: UsagePeriod,
+  range?: UsageDateRange,
 ): Promise<UsageSummary | null> {
-  const query = period !== 'all' ? `?period=${period}` : '';
-  const res = await authedFetch(`${BACKEND_URL}/api/usage/summary${query}`);
+  const res = await authedFetch(`${BACKEND_URL}/api/usage/summary${usageSummaryQuery(period, range)}`);
   return res.ok ? (res.json() as Promise<UsageSummary>) : null;
 }
 

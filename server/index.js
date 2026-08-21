@@ -13,7 +13,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { attachLiveTranslate } from './liveTranslate.js';
 import { toTraditional } from './zhConvert.js';
-import { periodSince, localMonth } from './usage-period.js';
+import { periodSince, localMonth, dayRange } from './usage-period.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -695,7 +695,7 @@ app.put('/api/settings', requireAuth, (req, res) => {
 // Usage tracking endpoints (protected)
 // ---------------------------------------------------------------------------
 
-// Per-engine totals for rows with timestamp >= since (null => all rows).
+// Per-engine totals for rows with since <= timestamp < until (null => unbounded).
 const sumByModelStmt = db.prepare(`
   SELECT
     COALESCE(model_used, 'basic')         AS model,
@@ -704,15 +704,16 @@ const sumByModelStmt = db.prepare(`
     COUNT(*)                                AS requests
   FROM translations
   WHERE (@since IS NULL OR timestamp >= @since)
+    AND (@until IS NULL OR timestamp <  @until)
   GROUP BY COALESCE(model_used, 'basic')
 `);
-function sumByModel(since) {
+function sumByModel(since, until = null) {
   const out = {
     basic:   { chars: 0, cost: 0, requests: 0 },
     premium: { chars: 0, cost: 0, requests: 0 },
     live:    { chars: 0, cost: 0, requests: 0 },
   };
-  for (const r of sumByModelStmt.all({ since })) {
+  for (const r of sumByModelStmt.all({ since, until })) {
     const key = out[r.model] ? r.model : 'basic';
     out[key].chars    += r.chars;
     out[key].cost     += r.cost;
@@ -722,18 +723,26 @@ function sumByModel(since) {
 }
 
 // GET /api/usage/summary?period=week|month  -- totals for the period (default: all time)
+// GET /api/usage/summary?from=YYYY-MM-DD&to=YYYY-MM-DD  -- inclusive local calendar days
 // Free tier (500K chars/month, $0/char) only applies to the basic engine and is
 // always computed over the current month regardless of `period`.
 // Premium (Gemini) is billed from the first character.
 app.get('/api/usage/summary', requireAuth, (req, res) => {
   try {
     const now = new Date();
-    const period = ['week', 'month'].includes(req.query.period) ? req.query.period : 'all';
-    const since = periodSince(period, now);          // null => no time filter
+    let period, since = null, until = null;
+    if (req.query.from !== undefined || req.query.to !== undefined) {
+      const range = dayRange(req.query.from, req.query.to);
+      if (!range) return res.status(400).json({ error: '日期格式需為 YYYY-MM-DD，且起日不得晚於迄日' });
+      period = 'custom'; since = range.since; until = range.until;
+    } else {
+      period = ['week', 'month'].includes(req.query.period) ? req.query.period : 'all';
+      since = periodSince(period, now);              // null => no time filter
+    }
     const monthSince = periodSince('month', now);
     const month = localMonth(now);
 
-    const by_model      = sumByModel(since);                                   // selected period
+    const by_model      = sumByModel(since, until);                            // selected period
     const monthByModel  = period === 'month' ? by_model : sumByModel(monthSince); // free tier is monthly
 
     const totalChars     = by_model.basic.chars + by_model.premium.chars + by_model.live.chars;
@@ -759,6 +768,7 @@ app.get('/api/usage/summary', requireAuth, (req, res) => {
       free_tier_limit: freeTierLimit,
       by_model,
       month,
+      period,
     });
   } catch (error) {
     console.error('Usage summary error:', error);
