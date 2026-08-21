@@ -695,6 +695,13 @@ app.put('/api/settings', requireAuth, (req, res) => {
 // Usage tracking endpoints (protected)
 // ---------------------------------------------------------------------------
 
+// Prepaid budget shown in the back office: an NT$ amount converted to USD at a
+// fixed rate. Read at call time so server/.env (loaded after imports) applies.
+function envNumber(name, dflt) {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) && v > 0 ? v : dflt;
+}
+
 // Per-engine totals for rows with since <= timestamp < until (null => unbounded).
 const sumByModelStmt = db.prepare(`
   SELECT
@@ -759,6 +766,13 @@ app.get('/api/usage/summary', requireAuth, (req, res) => {
     // Premium (Gemini text) and Live (Gemini audio, per-minute) are billed from $0.
     const actualCost     = basicActualCost + monthByModel.premium.cost + monthByModel.live.cost;
 
+    // Budget = all-time estimated (marked-up) cost against NT$ BUDGET_TWD, in USD.
+    const allByModel  = period === 'all' ? by_model : sumByModel(null);
+    const budgetTwd   = envNumber('BUDGET_TWD', 20000);
+    const twdPerUsd   = envNumber('TWD_PER_USD', 32);
+    const budgetUsd   = budgetTwd / twdPerUsd;
+    const spentUsd    = allByModel.basic.cost + allByModel.premium.cost + allByModel.live.cost;
+
     res.json({
       total_chars: totalChars,
       total_cost_estimated: totalCostEst,
@@ -769,6 +783,13 @@ app.get('/api/usage/summary', requireAuth, (req, res) => {
       by_model,
       month,
       period,
+      budget: {
+        twd: budgetTwd,
+        twd_per_usd: twdPerUsd,
+        usd: budgetUsd,
+        spent_usd: spentUsd,
+        remaining_usd: Math.max(0, budgetUsd - spentUsd),
+      },
     });
   } catch (error) {
     console.error('Usage summary error:', error);

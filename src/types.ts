@@ -32,6 +32,8 @@ export interface UsageSummary {
   free_tier_limit: number;
   free_limit?: number;
   month: string;
+  /** Prepaid NT$ budget expressed in USD; spent = all-time estimated cost. */
+  budget?: { twd: number; twd_per_usd: number; usd: number; spent_usd: number; remaining_usd: number };
 }
 
 export interface UsageRecord {

@@ -1225,9 +1225,11 @@ const VoiceTranslator = () => {
       const totalRequests = summary?.total_requests ?? 0;
       const totalChars = summary?.total_chars ?? 0;
       const estimatedCost = summary?.estimated_cost_usd ?? summary?.total_cost_estimated ?? 0;
-      const freeRemaining = summary?.free_remaining ?? 0;
-      const freeLimit = summary?.free_limit ?? summary?.free_tier_limit ?? 500000;
-      const freePercent = freeLimit > 0 ? Math.min(100, ((freeLimit - freeRemaining) / freeLimit) * 100) : 0;
+      const budget = summary?.budget;
+      const budgetUsd = budget?.usd ?? 0;
+      const budgetSpent = budget?.spent_usd ?? 0;
+      const budgetRemaining = budget?.remaining_usd ?? 0;
+      const budgetPercent = budgetUsd > 0 ? Math.min(100, (budgetSpent / budgetUsd) * 100) : 0;
 
       return (
         <div className="h-screen w-screen flex flex-col overflow-hidden fixed inset-0" style={containerStyle}>
@@ -1277,7 +1279,7 @@ const VoiceTranslator = () => {
                 { value: totalRequests.toLocaleString(), label: '總請求數' },
                 { value: totalChars.toLocaleString(), label: '總字元數' },
                 { value: `$${estimatedCost.toFixed(3)}`, label: '估算費用（USD）' },
-                { value: freeRemaining.toLocaleString(), label: '免費額度剩餘' },
+                { value: `$${budgetRemaining.toFixed(2)}`, label: '額度剩餘（USD）' },
               ].map((card, i) => (
                 <div key={i} className="rounded-2xl p-5" style={{ background: '#ffffff', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
                   <p className="text-2xl font-light mb-1" style={{ color: '#2d2d2d' }}>{card.value}</p>
@@ -1286,18 +1288,23 @@ const VoiceTranslator = () => {
               ))}
             </div>
 
-            {/* Free quota progress bar */}
+            {/* Budget progress bar (all-time spend vs. NT$ budget, shown in USD) */}
             <div className="rounded-2xl p-5 mb-6" style={{ background: '#ffffff', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
               <div className="flex justify-between items-center mb-3">
-                <p className="text-xs" style={{ color: '#888888' }}>免費額度使用進度</p>
-                <p className="text-xs" style={{ color: '#2d2d2d' }}>{freePercent.toFixed(1)}%</p>
+                <p className="text-xs" style={{ color: '#888888' }}>額度使用進度</p>
+                <p className="text-xs" style={{ color: '#2d2d2d' }}>{budgetPercent.toFixed(1)}%</p>
               </div>
               <div className="w-full h-2 rounded-full" style={{ background: '#f0ede8' }}>
                 <div
                   className="h-2 rounded-full transition-all duration-500"
-                  style={{ width: `${freePercent}%`, background: '#c8956c' }}
+                  style={{ width: `${budgetPercent}%`, background: '#c8956c' }}
                 />
               </div>
+              {budget && (
+                <p className="text-xs mt-3" style={{ color: '#888888' }}>
+                  NT${budget.twd.toLocaleString()} ≈ ${budgetUsd.toFixed(2)}（匯率 {budget.twd_per_usd}）・累計已用 ${budgetSpent.toFixed(2)}
+                </p>
+              )}
             </div>
 
             {/* Recent translations */}

@@ -17,6 +17,9 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       # 用量統計「本週／本月」的時區邊界（IANA 名稱），預設 Asia/Taipei
       - USAGE_TZ=${USAGE_TZ:-Asia/Taipei}
+      # 後台「額度剩餘」：NT$ 預算與換算匯率（USD 顯示）
+      - BUDGET_TWD=${BUDGET_TWD:-20000}
+      - TWD_PER_USD=${TWD_PER_USD:-32}
       - JWT_SECRET=${JWT_SECRET}
       - ADMIN_USERNAME=${ADMIN_USERNAME}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD}
