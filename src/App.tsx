@@ -1183,7 +1183,7 @@ const VoiceTranslator = () => {
 
                   {/* This month's Live spend */}
                   <div className="pt-3 flex items-center justify-between" style={{ borderTop: '1px solid #f0ede8' }}>
-                    <span className="text-xs" style={{ color: '#888888' }}>本月 Live 花費</span>
+                    <span className="text-xs" style={{ color: '#888888' }}>本月 Live 花費（USD）</span>
                     <span className="text-sm" style={{ color: '#2d2d2d' }}>
                       ${(appSettings?.live_month_cost_usd ?? 0).toFixed(2)}
                       <span className="text-xs ml-1" style={{ color: '#888888' }}>/ ${appSettings?.live_cost_cap_usd ?? 0}</span>
@@ -1261,7 +1261,7 @@ const VoiceTranslator = () => {
               {[
                 { value: totalRequests.toLocaleString(), label: '總請求數' },
                 { value: totalChars.toLocaleString(), label: '總字元數' },
-                { value: `$${estimatedCost.toFixed(3)}`, label: '估算費用' },
+                { value: `$${estimatedCost.toFixed(3)}`, label: '估算費用（USD）' },
                 { value: freeRemaining.toLocaleString(), label: '免費額度剩餘' },
               ].map((card, i) => (
                 <div key={i} className="rounded-2xl p-5" style={{ background: '#ffffff', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
