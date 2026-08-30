@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { usageSummaryQuery, appendRecords } from './api';
+import { usageSummaryQuery, usageHistoryQuery, appendRecords } from './api';
 
 describe('usageSummaryQuery', () => {
   it('maps presets to ?period= and "all" to no query', () => {
@@ -11,6 +11,19 @@ describe('usageSummaryQuery', () => {
   it('sends from/to for a custom range and nothing without one', () => {
     expect(usageSummaryQuery('custom', { from: '2026-08-01', to: '2026-08-20' })).toBe('?from=2026-08-01&to=2026-08-20');
     expect(usageSummaryQuery('custom')).toBe('');
+  });
+});
+
+describe('usageHistoryQuery', () => {
+  it('always identifies preset periods, including all time', () => {
+    expect(usageHistoryQuery('week')).toBe('?period=week');
+    expect(usageHistoryQuery('month')).toBe('?period=month');
+    expect(usageHistoryQuery('all')).toBe('?period=all');
+  });
+
+  it('sends an inclusive custom date range', () => {
+    expect(usageHistoryQuery('custom', { from: '2026-08-01', to: '2026-08-30' }))
+      .toBe('?from=2026-08-01&to=2026-08-30');
   });
 });
 

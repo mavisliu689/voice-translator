@@ -75,3 +75,11 @@ export function localMonth(now = new Date(), tz = usageTz()) {
   const { y, m } = localParts(now, tz);
   return `${y}-${String(m + 1).padStart(2, '0')}`;
 }
+
+// Local YYYY-MM-DD label for a UTC instant. Usage reports group on this label
+// rather than substr(timestamp, 1, 10), which would group by the UTC day and
+// put Taipei's 00:00-07:59 traffic under the previous date.
+export function localDate(instant, tz = usageTz()) {
+  const { y, m, d } = localParts(instant, tz);
+  return `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}

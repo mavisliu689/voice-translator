@@ -44,3 +44,17 @@ export interface UsageRecord {
   char_count: number;
   estimated_cost_usd: number;
 }
+
+export interface UsageDailyRow {
+  date: string;
+  total_chars: number;
+  total_cost: number;
+  request_count: number;
+}
+
+export interface UsageHistory {
+  period: 'week' | 'month' | 'all' | 'custom';
+  from: string;
+  to: string;
+  daily: UsageDailyRow[];
+}

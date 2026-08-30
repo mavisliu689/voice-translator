@@ -34,7 +34,7 @@ describe('server smoke', () => {
 // /api/usage/summary?period= boundaries. The DB column is UTC 'YYYY-MM-DD HH:MM:SS';
 // periods start at local (Asia/Taipei, UTC+8) midnight, so the returned string
 // is that instant expressed in UTC.
-import { periodSince, localMonth, dayRange } from './usage-period.js';
+import { periodSince, localMonth, localDate, dayRange } from './usage-period.js';
 
 describe('periodSince', () => {
   // Thu 2026-08-20 14:30 Taipei == 06:30 UTC
@@ -133,5 +133,12 @@ describe('dayRange (custom from/to, inclusive local calendar days)', () => {
   it('respects the tz argument (DST zone, spring forward inside the range)', () => {
     expect(dayRange('2026-03-07', '2026-03-08', 'America/New_York'))
       .toEqual({ since: '2026-03-07 05:00:00', until: '2026-03-09 04:00:00' });
+  });
+});
+
+describe('localDate', () => {
+  it('labels records by the configured local calendar day', () => {
+    expect(localDate(new Date('2026-08-29T16:30:00Z'))).toBe('2026-08-30');
+    expect(localDate(new Date('2026-08-30T03:00:00Z'))).toBe('2026-08-30');
   });
 });
