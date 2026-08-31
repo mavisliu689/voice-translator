@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Mic, MicOff, Volume2, ArrowRightLeft, Copy, AlertCircle, Shield, BarChart3, ChevronLeft, LogOut, UserPlus, Trash2, Users, Settings, Sparkles, Zap } from 'lucide-react';
+import { Mic, MicOff, Volume2, ArrowRightLeft, Copy, AlertCircle, Shield, BarChart3, ChevronLeft, Download, LogOut, UserPlus, Trash2, Users, Settings, Sparkles, Zap } from 'lucide-react';
 import {
   languages,
   langName,
@@ -15,6 +15,7 @@ import {
   login as apiLogin,
   makeAuthedFetch,
   fetchUsageSummary,
+  fetchUsageHistory,
   type UsagePeriod,
   fetchUsageRecent,
   appendRecords,
@@ -38,6 +39,7 @@ import {
 } from './hooks/useEmbedMode';
 import { useLiveTranslate, type LiveStatus, type LiveAudioSource } from './hooks/useLiveTranslate';
 import type { TranslationHistoryItem, Admin, UsageSummary, UsageRecord } from './types';
+import { downloadUsageReport } from './lib/usage-report';
 
 injectPulseStyleOnce();
 
@@ -119,6 +121,8 @@ const VoiceTranslator = () => {
   const [usageRecent, setUsageRecent] = useState<UsageRecord[]>([]);
   const [usageRecentTotal, setUsageRecentTotal] = useState(0);
   const [loadingMoreRecent, setLoadingMoreRecent] = useState(false);
+  const [downloadingReport, setDownloadingReport] = useState(false);
+  const [reportNotice, setReportNotice] = useState('');
   const [usagePeriod, setUsagePeriod] = useState<UsagePeriod>('week');
   const [usageRange, setUsageRange] = useState(() => {
     const today = localIsoDate(new Date());
@@ -785,6 +789,25 @@ const VoiceTranslator = () => {
     }
   }, [authedFetch, usageRecent.length]);
 
+  const handleDownloadDailyReport = useCallback(async () => {
+    if (usagePeriod === 'custom' && usageRange.from > usageRange.to) return;
+    setDownloadingReport(true);
+    setReportNotice('');
+    try {
+      const history = await fetchUsageHistory(authedFetch, usagePeriod, usageRange);
+      if (history.daily.length === 0) {
+        setReportNotice('所選期間沒有可下載的用量記錄');
+        return;
+      }
+      downloadUsageReport(history);
+      setReportNotice('日報表已下載');
+    } catch (err) {
+      setReportNotice(err instanceof Error ? err.message : '日報表下載失敗');
+    } finally {
+      setDownloadingReport(false);
+    }
+  }, [authedFetch, usagePeriod, usageRange]);
+
   const fetchAdmins = useCallback(async () => {
     if (!authToken) return;
     try {
@@ -1236,8 +1259,9 @@ const VoiceTranslator = () => {
           {topBar}
 
           {/* Period tabs */}
-          <div className="flex gap-2 px-5 mb-5 flex-shrink-0">
-            {([['week', '本週'], ['month', '本月'], ['all', '全部'], ['custom', '自訂']] as const).map(([key, label]) => (
+          <div className="flex items-center gap-2 px-5 mb-5 flex-shrink-0">
+            <div className="flex gap-2 min-w-0 overflow-x-auto">
+              {([['week', '本週'], ['month', '本月'], ['all', '全部'], ['custom', '自訂']] as const).map(([key, label]) => (
               <button
                 key={key}
                 onClick={() => setUsagePeriod(key)}
@@ -1250,7 +1274,19 @@ const VoiceTranslator = () => {
               >
                 {label}
               </button>
-            ))}
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={handleDownloadDailyReport}
+              disabled={downloadingReport || (usagePeriod === 'custom' && usageRange.from > usageRange.to)}
+              className="ml-auto flex-shrink-0 p-2 rounded-xl transition-colors disabled:opacity-50"
+              style={{ background: '#ffffff', color: '#c8956c', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}
+              title="下載日報表 CSV"
+              aria-label="下載日報表 CSV"
+            >
+              <Download className={`w-4 h-4 ${downloadingReport ? 'animate-bounce' : ''}`} />
+            </button>
           </div>
 
           {usagePeriod === 'custom' && (
@@ -1269,6 +1305,10 @@ const VoiceTranslator = () => {
                 style={{ background: '#faf9f6', border: '1px solid #e8e4df', color: '#2d2d2d' }}
               />
             </div>
+          )}
+
+          {reportNotice && (
+            <p className="px-5 -mt-2 mb-4 text-xs flex-shrink-0" style={{ color: '#888888' }}>{reportNotice}</p>
           )}
 
           <div className="flex-1 overflow-y-auto px-5 pb-6" style={{ scrollbarWidth: 'thin', scrollbarColor: '#e8e4df transparent', touchAction: 'pan-y', WebkitOverflowScrolling: 'touch' } as React.CSSProperties}>

@@ -13,7 +13,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { attachLiveTranslate } from './liveTranslate.js';
 import { toTraditional } from './zhConvert.js';
-import { periodSince, localMonth, dayRange } from './usage-period.js';
+import { periodSince, localMonth, localDate, dayRange } from './usage-period.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -797,30 +797,48 @@ app.get('/api/usage/summary', requireAuth, (req, res) => {
   }
 });
 
-// GET /api/usage/history?from=YYYY-MM-DD&to=YYYY-MM-DD -- daily breakdown
+// GET /api/usage/history?period=week|month|all -- daily breakdown
+// GET /api/usage/history?from=YYYY-MM-DD&to=YYYY-MM-DD -- inclusive local days
 app.get('/api/usage/history', requireAuth, (req, res) => {
   try {
     const now = new Date();
-    const defaultFrom = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
-    const defaultTo = now.toISOString().slice(0, 10);
+    let period, since = null, until = null, from = null, to = localDate(now);
+    if (req.query.from !== undefined || req.query.to !== undefined) {
+      const range = dayRange(req.query.from, req.query.to);
+      if (!range) return res.status(400).json({ error: '日期格式需為 YYYY-MM-DD，且起日不得晚於迄日' });
+      period = 'custom'; since = range.since; until = range.until;
+      from = req.query.from; to = req.query.to;
+    } else {
+      // Keep the historical no-query behaviour (current month), while allowing
+      // the download UI to explicitly request all-time data.
+      period = ['week', 'month', 'all'].includes(req.query.period) ? req.query.period : 'month';
+      since = periodSince(period, now);
+      if (since) from = localDate(new Date(`${since.replace(' ', 'T')}Z`));
+    }
 
-    const from = req.query.from || defaultFrom;
-    const to = req.query.to || defaultTo;
-
-    const daily = db.prepare(`
-      SELECT
-        substr(timestamp, 1, 10)              AS date,
-        SUM(char_count)                        AS total_chars,
-        SUM(estimated_cost_usd)                AS total_cost,
-        COUNT(*)                                AS request_count
+    const rows = db.prepare(`
+      SELECT timestamp, char_count, estimated_cost_usd
       FROM translations
-      WHERE substr(timestamp, 1, 10) >= @from
-        AND substr(timestamp, 1, 10) <= @to
-      GROUP BY substr(timestamp, 1, 10)
-      ORDER BY date ASC
-    `).all({ from, to });
+      WHERE (@since IS NULL OR timestamp >= @since)
+        AND (@until IS NULL OR timestamp < @until)
+      ORDER BY timestamp ASC
+    `).all({ since, until });
 
-    res.json({ from, to, daily });
+    const grouped = new Map();
+    for (const row of rows) {
+      const instant = new Date(`${row.timestamp.replace(' ', 'T')}Z`);
+      if (Number.isNaN(instant.getTime())) continue;
+      const date = localDate(instant);
+      const item = grouped.get(date) || { date, total_chars: 0, total_cost: 0, request_count: 0 };
+      item.total_chars += Number(row.char_count) || 0;
+      item.total_cost += Number(row.estimated_cost_usd) || 0;
+      item.request_count += 1;
+      grouped.set(date, item);
+    }
+    const daily = Array.from(grouped.values());
+    if (!from) from = daily[0]?.date ?? to;
+
+    res.json({ period, from, to, daily });
   } catch (error) {
     console.error('Usage history error:', error);
     res.status(500).json({ error: 'Failed to retrieve usage history' });

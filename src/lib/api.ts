@@ -1,4 +1,4 @@
-import type { Admin, TranslateResult, UsageRecord, UsageSummary } from '../types';
+import type { Admin, TranslateResult, UsageHistory, UsageRecord, UsageSummary } from '../types';
 
 export const BACKEND_URL = (import.meta.env.VITE_BACKEND_URL ?? '') as string;
 export const AUTH_TOKEN_KEY = 'vt_admin_token';
@@ -117,6 +117,11 @@ export function usageSummaryQuery(period: UsagePeriod, range?: UsageDateRange): 
   return period !== 'all' ? `?period=${period}` : '';
 }
 
+export function usageHistoryQuery(period: UsagePeriod, range?: UsageDateRange): string {
+  if (period === 'custom') return range ? `?from=${range.from}&to=${range.to}` : '';
+  return `?period=${period}`;
+}
+
 export async function fetchUsageSummary(
   authedFetch: (u: string, i?: RequestInit) => Promise<Response>,
   period: UsagePeriod,
@@ -124,6 +129,17 @@ export async function fetchUsageSummary(
 ): Promise<UsageSummary | null> {
   const res = await authedFetch(`${BACKEND_URL}/api/usage/summary${usageSummaryQuery(period, range)}`);
   return res.ok ? (res.json() as Promise<UsageSummary>) : null;
+}
+
+export async function fetchUsageHistory(
+  authedFetch: (u: string, i?: RequestInit) => Promise<Response>,
+  period: UsagePeriod,
+  range?: UsageDateRange,
+): Promise<UsageHistory> {
+  const res = await authedFetch(`${BACKEND_URL}/api/usage/history${usageHistoryQuery(period, range)}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || '無法載入日報表');
+  return data as UsageHistory;
 }
 
 export type UsageRecentPage = { records: UsageRecord[]; total: number };
