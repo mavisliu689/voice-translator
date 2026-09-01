@@ -47,6 +47,8 @@ export interface UsageRecord {
 
 export interface UsageDailyRow {
   date: string;
+  source_lang: string;
+  target_lang: string;
   total_chars: number;
   total_cost: number;
   request_count: number;

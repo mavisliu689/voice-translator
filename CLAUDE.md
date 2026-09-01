@@ -40,7 +40,7 @@
   - `GET    /api/admins`、`POST /api/admins`、`DELETE /api/admins/:id`
 - **用量追蹤 API（需 auth）**：
   - `GET /api/usage/summary?period=week|month` 或 `?from=YYYY-MM-DD&to=YYYY-MM-DD` — 所選期間總計（省略＝全部；week/month 以 `USAGE_TZ`，預設 Asia/Taipei，的週一／月初 00:00 為界；from/to 為該時區的日曆日、含迄日，格式錯或起日晚於迄日回 400）。免費額度與 `actual_cost` 固定以當月計算；`budget` 為 NT$ 預算（`BUDGET_TWD`，預設 20000）以 `TWD_PER_USD`（預設 32）換算的 USD 額度，已用＝全部期間估算費用
-  - `GET /api/usage/history?from=&to=` — 每日用量
+  - `GET /api/usage/history?from=&to=` — 每日 × 語言對用量（`source_lang`／`target_lang`，來源未指定時為 `auto`）
   - `GET /api/usage/recent?limit=50&offset=0` — 由新到舊分頁（limit 上限 200），回傳 `records`、`total`
 
 ### 部署

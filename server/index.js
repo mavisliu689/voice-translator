@@ -817,7 +817,7 @@ app.get('/api/usage/history', requireAuth, (req, res) => {
     }
 
     const rows = db.prepare(`
-      SELECT timestamp, char_count, estimated_cost_usd
+      SELECT timestamp, source_lang, target_lang, char_count, estimated_cost_usd
       FROM translations
       WHERE (@since IS NULL OR timestamp >= @since)
         AND (@until IS NULL OR timestamp < @until)
@@ -829,11 +829,16 @@ app.get('/api/usage/history', requireAuth, (req, res) => {
       const instant = new Date(`${row.timestamp.replace(' ', 'T')}Z`);
       if (Number.isNaN(instant.getTime())) continue;
       const date = localDate(instant);
-      const item = grouped.get(date) || { date, total_chars: 0, total_cost: 0, request_count: 0 };
+      // One row per day *and* language pair, so the report says which language.
+      const source_lang = row.source_lang || 'auto';
+      const target_lang = row.target_lang || '';
+      const key = `${date}|${source_lang}|${target_lang}`;
+      const item = grouped.get(key) ||
+        { date, source_lang, target_lang, total_chars: 0, total_cost: 0, request_count: 0 };
       item.total_chars += Number(row.char_count) || 0;
       item.total_cost += Number(row.estimated_cost_usd) || 0;
       item.request_count += 1;
-      grouped.set(date, item);
+      grouped.set(key, item);
     }
     const daily = Array.from(grouped.values());
     if (!from) from = daily[0]?.date ?? to;
