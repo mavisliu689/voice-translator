@@ -1,5 +1,5 @@
 # 後端 Dockerfile
-FROM node:20-alpine
+FROM node:22-alpine
 
 # 設定工作目錄
 WORKDIR /app
